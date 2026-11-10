@@ -16,6 +16,10 @@ This project involves ongoing reverse engineering of the Ploytec USB protocol. R
 - `akai_eie_pro.md` — Akai EIE Pro (09E8:0010, #73): bulk in / isochronous out with a 3-byte feedback EP, 4x4 24-bit, MIDI on its own endpoints; what Ozzy would need
 - `ploytec_sample_rates.md` — per-device rate/format table from the official plist (DB2 48k only, DB4 44.1–96k), SET_CUR sequence, endpoint bandwidth limits
 - `device_settings.md` — plan for device settings (clock source, digital I/O, routing) through ALSA controls / CoreAudio properties with a shared model in `common/`, plus the official driver facts it needs; clock source, S/PDIF out mode, routing and the ESU1808 mirror pair implemented (untested on hardware), how they are built, what is open
+- `tascam_us600.md` — US-600 (0644:8035): the device's USB layout, which pipes work and which
+  do not, TASCAM's Windows package (who binds what, no per-device data table, `'M'` is a
+  control-panel request and not init), and mainline's us122l as the working reference for the
+  same endpoints
 - `open_questions.md` — unresolved questions and investigation leads
 
 When new RE findings come up in conversation, update these files. Treat protocol definitions as evolving — flag anything that looks partially understood.
