@@ -155,6 +155,36 @@ After a replug (the device came back as `Bus 002 Device 012`) and a fresh load:
 - Pending: `scripts/midi-probe.py` (needs root) and, if that leaves the question open, the
   Windows capture (plan fallback).
 
+## Reference: mainline's us122l on the same family (facts only)
+
+`sound/usb/usx2y/us122l.c` drives the US-122L (`0644:800e`) and US-144 (`0644:800f`) — the same
+bulk-in / isoc-out layout, MIDI on `0x04` / `0x83` in alt 1. Its source is GPL-2.0, so these
+are the facts of the wire, not code to copy:
+
+- start order: `SET_INTERFACE(0, 1)` on the US-144 then `SET_INTERFACE(1, 1)`, then **two 'I'
+  writes with wIndex 0: 0x11, then 0x10** (a pulse: bit 0 set, then cleared), then the rate
+  through UAC `SET_CUR` on **endpoint `0x81`**, then the PCM stream starts. The USB-MIDI
+  endpoints are created only after that, and the MIDI IN URBs are submitted when an app opens
+  the port (`snd_usbmidi_input_start`), not at start.
+- MIDI uses mainline's generic driver with `QUIRK_MIDI_US122L` (`sound/usb/midi.c`): out_ep 4,
+  in_ep 3, and the transfer size is **forced to 9 bytes** (`ep->max_transfer = 9`, the same as
+  Ozzy). 4 URBs; at High Speed **one MIDI byte per transfer**, the rest 0xFD — so the last byte
+  is 0xFD, there is **no `0xE0` control byte** on the way out. The input handler accepts only a
+  transfer of exactly 9 bytes, strips trailing 0xFD and passes the rest; it knows no control
+  byte either.
+
+Where Ozzy differs from it, worth testing one at a time (see `scripts/midi-probe.py`):
+| | mainline us122l (works on US-144) | Ozzy on the US-600 |
+|---|---|---|
+| 'I' writes | 0x11 then 0x10 | the read value OR 0x20 (0x12 -> 0x32) |
+| rate `SET_CUR` on | `0x81` | `0x86` |
+| bytes per MIDI-out transfer | 1 (HS), no control byte | 3-4, last byte `0xE0` |
+| MIDI-out pacing | 4 URBs, resubmit at once, device NAKs | one URB per ms, timer |
+| MIDI IN submitted | when the port is opened | at start, always |
+
+The pulse and the `0x10` end state are the interesting part: Ozzy leaves bit 5 (0x20) set,
+mainline leaves bit 0 clear, and nobody has checked what the US-600's firmware wants there.
+
 ## Reproduce
 
 ```bash
