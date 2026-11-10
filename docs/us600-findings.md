@@ -4,6 +4,9 @@ Hardware: **TASCAM US-600** (6 in / 4 out USB 2.0 audio + MIDI), USB ID `0644:80
 discontinued. Driver under test: this tree (Ozzy, `snd-usb-ozzy`), device row
 `TascamUS600` in `common/ozzy_devices.def`, marked `EXPERIMENTAL`.
 
+The bring-up plan (Linux Mint, then Raspberry Pi 3B) is in `plan.md`; this file is the
+measurement it starts from.
+
 ## USB descriptors (read from `/sys/bus/usb/devices/<dev>/descriptors`)
 
 ```
@@ -112,10 +115,56 @@ and receiving one note:
 Then compare with `common/devices/ploytec/ploytec_midi.h` and adjust the device row and/or
 the isoc engine.
 
+## Session 2026-11-10 (same machine, kernel 6.14.0-37, module at `345be40`)
+
+After a replug (the device came back as `Bus 002 Device 012`) and a fresh load:
+
+- Handshake as before, card 1 `US600`, `pcm0p` / `pcm0c` / `midi0`, the ten controls
+  (`Clock Source`, the three `Capture x-y Source`, two `Output x-y Source`,
+  `IEC958 Playback Mode`, `S/PDIF Clock Validity`, `PCM Capture Transfer`, `PCM Capture Queue`)
+  and the two CARD bytes controls `Ozzy Info` / `Ozzy Stats`.
+- Playback `aplay -D hw:1,0 -f S24_3LE -c 4 -r 48000 -d 1 /dev/zero` -> `rc=0`.
+  Capture `arecord -D hw:1,0 -f S24_3LE -c 6 -r 48000 -d 2` -> `rc=0`, 1.73 MB.
+  `Ozzy Stats` afterwards: 0 errors both directions, 0 short transfers, `late` 254 and
+  max gap ~20 ms on capture (the starts).
+- **MIDI out and in both fail at the USB level with `-EPROTO`**, from the very first transfer
+  (`usbmon` on bus 2, `scripts/usbmon-midi.sh`, 2 s of capture):
+  - `0x04` (bulk OUT): 3170 submissions, 3170 completions, **all status `-71` (`-EPROTO`)**,
+    length 0, payload `fd fd fd fd fd fd fd fd e0` or `90 24 64 fd ... e0`.
+  - `0x83` (bulk IN): 29 331 submissions in the same 2 s, every completion `-71` and
+    resubmitted immediately, so the engine spins at ~15 k submissions/s. Nothing is logged
+    for MIDI in.
+  - Meanwhile `0x02` (isoc OUT), `0x81` (feedback) and `0x86` (bulk IN, the PCM capture) all
+    complete with status 0.
+  - `-71` is `EPROTO`, which on xHCI is a **USB transaction error** (an invalid answer from the
+    device), not a STALL (`-EPIPE` would be 32) and not a NAK (that would show as a timeout).
+- Consequence for the earlier bullet: the driver logs `MIDI output error` ~1000 times/s, which
+  fills and wraps the kernel ring buffer. `dmesg | grep -c` therefore stays flat (it even went
+  down by 18 during the capture) and `tail` shows old lines: the missing growth is **not**
+  evidence that the transfers work. `Tx bytes` in `/proc/asound/card1/midi0` counts what ALSA
+  accepted, not what left the host. The rawmidi drain rate (~3.3 KB/s) is the timer popping
+  3-4 bytes per millisecond into a transfer that then fails.
+- So the loopback (`scripts/midi-loop-test.sh`) shows Tx advancing and Rx at 0 with no *new*
+  error count, and that is consistent with total failure of both directions, not with success.
+- What is left: the endpoint rejects everything while the other three pipes work, so neither
+  the size (9 bytes) nor the endpoint choice is at fault. A missing initialisation that enables
+  the MIDI pipes (hypothesis 2) is the leading explanation; the alternative is that the
+  device wants those pipes driven differently (transfer type / alt setting / packet size).
+  `scripts/midi-probe.py` asks the endpoints directly with the module unloaded to separate the
+  two (plan phase 2b).
+- Pending: `scripts/midi-probe.py` (needs root) and, if that leaves the question open, the
+  Windows capture (plan fallback).
+
 ## Reproduce
 
 ```bash
 scripts/probe.sh                 # read-only, no root
 sudo scripts/build-load.sh       # build + reload the module
 scripts/midi-loop-test.sh -s 30  # send notes, report Tx/Rx and dmesg errors
+scripts/usbmon-midi.sh           # what the device does on 0x04 / 0x83 (sudo)
+scripts/midi-probe.py            # ask 0x04 / 0x83 without the driver (sudo, unloads it)
 ```
+
+The last two are the ones that settle the MIDI question: `usbmon-midi.sh` shows the
+completion statuses on the wire, `midi-probe.py` shows whether the endpoints answer at all
+when nothing else drives the device.

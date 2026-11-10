@@ -20,6 +20,17 @@ This project involves ongoing reverse engineering of the Ploytec USB protocol. R
 
 When new RE findings come up in conversation, update these files. Treat protocol definitions as evolving — flag anything that looks partially understood.
 
+## Device bring-up work
+
+Per-device bring-up (hardware on the bench, what works and what does not) lives in `docs/`:
+- `docs/plan.md` — the US-600 plan: Linux Mint first, then Raspberry Pi 3B (audio baseline, MIDI
+diagnosis with usbmon/usbfs, validation, upstream), with the machine state it starts from
+- `docs/us600-findings.md` — the US-600 baseline: descriptors, what works, the failure modes and
+the working hypotheses
+
+Work on the `us600-midi` branch; `upstream` is read-only. When a bring-up answers a protocol
+question, move the fact into `.claude/re/` as usual.
+
 ## Code Style
 - C where we can, C++ where we must: `common/` and `engine/` are C; C++ only where a platform
   requires it (IOKit kext, CoreAudio HAL plugin internals)
