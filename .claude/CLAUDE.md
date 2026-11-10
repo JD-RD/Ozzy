@@ -27,6 +27,8 @@ When new RE findings come up in conversation, update these files. Treat protocol
 ## Device bring-up work
 
 Per-device bring-up (hardware on the bench, what works and what does not) lives in `docs/`:
+- `docs/handoff.md` — **start here**: where the work stands, the one open question, the next
+  steps in order, the bench state, the tools, the traps, and the facts already established
 - `docs/plan.md` — the US-600 plan: Linux Mint first, then Raspberry Pi 3B (audio baseline, MIDI
 diagnosis with usbmon/usbfs, validation, upstream), with the machine state it starts from
 - `docs/us600-findings.md` — the US-600 baseline: descriptors, what works, the failure modes and
