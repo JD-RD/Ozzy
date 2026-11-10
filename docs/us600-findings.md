@@ -155,6 +155,27 @@ After a replug (the device came back as `Bus 002 Device 012`) and a fresh load:
 - Pending: `scripts/midi-probe.py` (needs root) and, if that leaves the question open, the
   Windows capture (plan fallback).
 
+## Session 2026-11-10, later: the device's IN side wedges
+
+After ~40 min of experiments on the same load (audio tests, a rawmidi write flood, the
+`usbmon` capture, two loopback tests), the device stopped answering on more than the MIDI
+pipes:
+
+- `arecord` on `pcm0c` now fails after the header (`pcm_read: EIO`), and `Ozzy Stats` reads
+  **2 574 129 PCM-in transfers, 2 127 856 of them errors**, longest gap between completions
+  108 s (`pcm0c` closed, nothing retries once ALSA gave up).
+- The MIDI storm continues at ~1000 logged errors/s, so `dmesg | grep -c` sits at whatever the
+  ring holds (~4700): a flat or wobbling count means nothing, only the timestamps tell.
+- Same shape as the DB4's documented failure (`.claude/re/ploytec_bulk_devices.md`, "the DB4's
+  IN side dies when the host stops polling it"): the IN pipe stops completing and the engine's
+  restart does not bring it back. Not yet checked whether the US-600 recovers on a module
+  reload alone or needs a port reset / replug; `scripts/midi-probe.py` now does
+  `libusb_reset_device` first, which is the cheapest way to find out.
+- Consequence for the bench: **start every experiment from a fresh device** (reset or replug),
+  otherwise a wedged pipe from the previous run is indistinguishable from the bug under test.
+  This also matters for the Pi target: a device that wedges after a few minutes of failing
+  transfers is not a MIDI interface one can leave running.
+
 ## Reference: mainline's us122l on the same family (facts only)
 
 `sound/usb/usx2y/us122l.c` drives the US-122L (`0644:800e`) and US-144 (`0644:800f`) — the same

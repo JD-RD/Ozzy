@@ -77,6 +77,7 @@ class Usb:
 			("libusb_release_interface", [ctypes.c_void_p, ctypes.c_int]),
 			("libusb_set_interface_alt_setting", [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]),
 			("libusb_clear_halt", [ctypes.c_void_p, ctypes.c_ubyte]),
+			("libusb_reset_device", [ctypes.c_void_p]),
 			("libusb_bulk_transfer", [ctypes.c_void_p, ctypes.c_ubyte, ctypes.c_char_p,
 						  ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.c_uint]),
 			("libusb_control_transfer", [ctypes.c_void_p, ctypes.c_uint8, ctypes.c_uint8,
@@ -105,6 +106,9 @@ class Usb:
 
 	def clear_halt(self, ep):
 		return self.lib.libusb_clear_halt(self.handle, ep)
+
+	def reset(self):
+		return self.lib.libusb_reset_device(self.handle)
 
 	def control(self, rtype, request, value, index, length=0, out=None, timeout_ms=500):
 		if length:
@@ -227,6 +231,11 @@ def main():
 	usb = Usb()
 	try:
 		usb.open()
+		# A port reset first: the device wedges its IN pipes after a while (see the
+		# findings), and a SET_CONFIGURATION alone does not always clear that.
+		print("\n== resetting the port")
+		print("   libusb_reset_device: %s" % name(usb.reset()))
+		time.sleep(0.5)
 		stage(usb, "as the driver sets it up, no handshake", (9, 42, 512), args.notes)
 		stage(usb, "after CLEAR_HALT on both MIDI endpoints", (9,), args.notes, clear_halt=True)
 		stage(usb, "interface 1 left in alt 0", (9,), args.notes, alt_iface1=False)
