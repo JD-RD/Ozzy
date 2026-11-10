@@ -46,6 +46,8 @@ NAMES = {
 
 
 def name(rc):
+	if rc >= 0:   # control transfers: bytes moved
+		return "%d ok" % rc
 	return "%d %s" % (rc, NAMES.get(rc, "?"))
 
 
@@ -213,10 +215,38 @@ def stage(usb, label, sizes, notes, alt_iface1=True, clear_halt=False, handshake
 		usb.release(intf)
 
 
+def listen(usb, secs, handshake=True):
+	"""Read 0x83 for @secs while somebody plays into the DIN IN."""
+	print("\n== listening on 0x83 for %ds - play notes into the US-600 MIDI IN" % secs)
+	setup(usb, True)
+	status = read_status(usb)
+	if handshake:
+		set_rate(usb, EP_PCM_IN)
+		set_rate(usb, EP_PCM_OUT)
+		if status is not None:
+			write_status(usb, status | 0x20)
+			time.sleep(0.04)
+	total = 0
+	end = time.time() + secs
+	while time.time() < end:
+		rc, moved, got = usb.bulk_in(EP_MIDI_IN, 9, 500)
+		if moved:
+			total += moved
+			print("   IN %d bytes: %s" % (moved, got.hex(" ")))
+		elif rc not in (-7,):
+			print("   IN failed: %s" % name(rc))
+			break
+	print("   %d bytes read" % total)
+	for intf in (1, 0):
+		usb.release(intf)
+
+
 def main():
 	ap = argparse.ArgumentParser(add_help=True)
 	ap.add_argument("-k", "--keep-unloaded", action="store_true", help="do not modprobe the driver again")
 	ap.add_argument("-n", "--notes", type=int, default=3, help="writes per size (default 3)")
+	ap.add_argument("-l", "--listen", type=int, default=0, metavar="SECS",
+			help="only listen on 0x83 for SECS seconds (DIN IN, no loopback needed)")
 	args = ap.parse_args()
 
 	if os.geteuid() != 0:
@@ -236,13 +266,16 @@ def main():
 		print("\n== resetting the port")
 		print("   libusb_reset_device: %s" % name(usb.reset()))
 		time.sleep(0.5)
-		stage(usb, "as the driver sets it up, no handshake", (9, 42, 512), args.notes)
-		stage(usb, "after CLEAR_HALT on both MIDI endpoints", (9,), args.notes, clear_halt=True)
-		stage(usb, "interface 1 left in alt 0", (9,), args.notes, alt_iface1=False)
-		stage(usb, "after the driver's 'I' write (status | 0x20) and SET_CUR", (9,), args.notes,
-		      handshake="ozzy")
-		stage(usb, "after mainline us122l's 'I' pulse 0x11, 0x10 and SET_CUR", (9,), args.notes,
-		      handshake="mainline")
+		if args.listen:
+			listen(usb, args.listen)
+		else:
+			stage(usb, "as the driver sets it up, no handshake", (9, 42, 512), args.notes)
+			stage(usb, "after CLEAR_HALT on both MIDI endpoints", (9,), args.notes, clear_halt=True)
+			stage(usb, "interface 1 left in alt 0", (9,), args.notes, alt_iface1=False)
+			stage(usb, "after the driver's 'I' write (status | 0x20) and SET_CUR", (9,), args.notes,
+			      handshake="ozzy")
+			stage(usb, "after mainline us122l's 'I' pulse 0x11, 0x10 and SET_CUR", (9,), args.notes,
+			      handshake="mainline")
 	finally:
 		usb.close()
 

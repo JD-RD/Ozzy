@@ -155,6 +155,40 @@ After a replug (the device came back as `Bus 002 Device 012`) and a fresh load:
 - Pending: `scripts/midi-probe.py` (needs root) and, if that leaves the question open, the
   Windows capture (plan fallback).
 
+## Session 2026-11-10, `usbfs` without the driver: the MIDI endpoints work at rest
+
+`scripts/midi-probe.py` (module unloaded, `libusb_reset_device`, `SET_CONFIGURATION 1`,
+alt 1 on both interfaces). Note that a port reset does **not** reset the 'I' register: it
+still reads 0x32, the value the driver wrote.
+
+- **bulk OUT `0x04` is accepted**: 9 bytes -> `ok, moved 9`, 42 bytes -> `ok, moved 42`. No
+  0xFD padding, no `0xE0` control byte needed for the device to ACK.
+- **512 bytes on `0x04` NAKs** (timeout), and once it has, the following 9-byte writes also
+  NAK until the pipe is re-armed (a `SET_CUR` on the PCM endpoints or a fresh
+  `SET_CONFIGURATION` brought it back in the next stages). So the device's MIDI FIFO is small,
+  and a write larger than it wedges the pipe for a while.
+- **bulk IN `0x83` never delivers anything**: 9, 42 and 512-byte reads all time out, with the
+  DIN loopback fitted and after the successful OUT writes. So either the device does not
+  forward its DIN IN to USB, or it does not forward USB to its DIN OUT (then the loopback
+  carries nothing).
+- CLEAR_HALT and leaving interface 1 in alt 0 change nothing.
+- `SET_CUR` 48000 to `0x86` and `0x02` works here (3 bytes); to `0x81` (mainline's choice) also.
+- The 'I' values tried (0x32 vs mainline's 0x11 then 0x10) change nothing for MIDI.
+
+**Consequence:** the device is not refusing these pipes. The driver's `-EPROTO` is a state
+that only exists while it streams, i.e. the difference between the probe and the driver is the
+PCM traffic (`0x02` isoc out, `0x86` bulk in), not the framing, the alt settings or the handshake.
+Two leads, in order:
+
+1. the engine submits the MIDI URBs right after starting the PCM transfers and keeps
+   resubmitting a failing MIDI-in URB ~15 000 times/s; mainline's us122l submits MIDI input
+   only when an app opens the port, and never in a tight loop;
+2. the device may accept MIDI only while nothing streams (unlikely: mainline does both on the
+   US-144, and the Windows driver on this very device certainly does).
+
+`scripts/usbmon-midi.sh -m` reloads the module inside the capture to show whether the first
+MIDI URBs fail before or after the first PCM completions, which separates the two.
+
 ## Session 2026-11-10, later: the device's IN side wedges
 
 After ~40 min of experiments on the same load (audio tests, a rawmidi write flood, the
