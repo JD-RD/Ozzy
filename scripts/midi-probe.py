@@ -216,7 +216,8 @@ def stage(usb, label, sizes, notes, alt_iface1=True, clear_halt=False, handshake
 
 
 def listen(usb, secs, handshake=True):
-	"""Read 0x83 for @secs while somebody plays into the DIN IN."""
+	"""Read 0x83 for @secs, writing a burst every second so a fitted DIN loopback
+	carries something (a single note may be too little for the device to send)."""
 	print("\n== listening on 0x83 for %ds - play notes into the US-600 MIDI IN" % secs)
 	setup(usb, True)
 	status = read_status(usb)
@@ -227,13 +228,24 @@ def listen(usb, secs, handshake=True):
 			write_status(usb, status | 0x20)
 			time.sleep(0.04)
 	total = 0
+	note = 0x24
+	last = 0.0
 	end = time.time() + secs
 	while time.time() < end:
-		rc, moved, got = usb.bulk_in(EP_MIDI_IN, 9, 500)
+		if time.time() - last >= 1.0:
+			last = time.time()
+			for k in range(3):
+				buf = bytearray([0xFD] * 9)
+				buf[0:3] = bytes([0x90, note + k, 0x64])
+				buf[8] = 0xE0
+				rc, moved = usb.bulk_out(EP_MIDI_OUT, bytes(buf))
+				print("   OUT %s, moved %d" % (name(rc), moved))
+			time.sleep(0.05)
+		rc, moved, got = usb.bulk_in(EP_MIDI_IN, 9, 300)
 		if moved:
 			total += moved
 			print("   IN %d bytes: %s" % (moved, got.hex(" ")))
-		elif rc not in (-7,):
+		elif rc != -7:
 			print("   IN failed: %s" % name(rc))
 			break
 	print("   %d bytes read" % total)
