@@ -36,6 +36,9 @@ REQTYPE_CLASS_EP_OUT = 0x22  # class, endpoint, host -> device
 REQ_STATUS = 0x49        # 'I'
 REQ_VERSION = 0x56       # 'V'
 REQ_SET_CUR = 0x01
+REQ_TABLE = 0x4D         # 'M', 64-byte routing table (VID 0x0644)
+REQ_MIXER = 0x54         # 'T', mixer knob/bitmap
+REQ_REVERB = 0x42        # 'B', 256-byte reverb buffer (VID 0x0644)
 
 NAMES = {
 	0: "ok", -1: "IO", -2: "INVALID_PARAM", -3: "ACCESS", -4: "NO_DEVICE",
@@ -253,12 +256,83 @@ def listen(usb, secs, handshake=True):
 		usb.release(intf)
 
 
+def drain_trial(usb, label, init, writes=20, loopback=True):
+	"""Reset the port, apply @init, then count how many 9-byte OUTs the device takes.
+
+	The MIDI-out FIFO does not drain when the device's MIDI engine is off: 2 writes
+	fit, the rest NAK forever. An init that starts the transmitter shows up as a
+	much larger count (and, with the DIN loopback fitted, as bytes on 0x83).
+	"""
+	print("\n== %s" % label)
+	print("   reset: %s" % name(usb.reset()))
+	time.sleep(0.4)
+	setup(usb, True)
+	if init:
+		init(usb)
+	ok = 0
+	for i in range(writes):
+		rc, moved = usb.bulk_out(EP_MIDI_OUT, note_pattern(9), 200)
+		if rc == 0 and moved == 9:
+			ok += 1
+		else:
+			print("   OUT stopped at #%d: %s" % (i + 1, name(rc)))
+			break
+	time.sleep(1.0)
+	rc, moved = usb.bulk_out(EP_MIDI_OUT, note_pattern(9), 200)
+	print("   accepted %d/%d 9-byte writes, then after 1 s: %s"
+	      % (ok, writes, "ok" if rc == 0 and moved == 9 else name(rc)))
+	if loopback and ok > 2:
+		time.sleep(0.2)
+		rc, moved, got = usb.bulk_in(EP_MIDI_IN, 9, 500)
+		print("   IN 0x83 -> %s, got %d%s" % (name(rc), moved, (" " + got.hex(" ")) if moved else ""))
+	release_all(usb)
+
+
+def release_all(usb):
+	for intf in (1, 0):
+		usb.release(intf)
+
+
+def trial_main(usb):
+	def i1_read(usb):
+		rc, data = usb.control(REQTYPE_IN, REQ_STATUS, 0, 1, 1)
+		print("   'I' idx1 read: %s%s" % (name(rc), (" = 0x%02x" % data[0]) if data else ""))
+		return data[0] if data else None
+
+	def m_zeros(usb):
+		rc, _ = usb.control(REQTYPE_OUT, REQ_TABLE, 0, 0, out=bytes(64), length=64)
+		print("   'M' 64 zero bytes: %s" % name(rc))
+
+	def i1_then_m(usb):
+		b = i1_read(usb)
+		m_zeros(usb)
+		if b is not None:
+			for name_, v in (("bit4 set", b | 0x10), ("bit4 clear", b & ~0x10)):
+				rc, _ = usb.control(REQTYPE_OUT, REQ_STATUS, v, 1)
+				print("   'I' idx1 write 0x%02x (%s): %s" % (v, name_, name(rc)))
+
+	def t_zero(usb):
+		rc, _ = usb.control(REQTYPE_OUT, REQ_MIXER, 0, 0)
+		print("   'T' 0/0: %s" % name(rc))
+
+	trial_main_list = [
+		("nothing (baseline)", None),
+		("'M' with 64 zero bytes", m_zeros),
+		("'I' idx1 read, then 'M' zeros, then idx1 bit 4 set/clear", i1_then_m),
+		("'T' mixer 0/0", t_zero),
+	]
+	for label, init in trial_main_list:
+		drain_trial(usb, label, init)
+
+
 def main():
 	ap = argparse.ArgumentParser(add_help=True)
 	ap.add_argument("-k", "--keep-unloaded", action="store_true", help="do not modprobe the driver again")
 	ap.add_argument("-n", "--notes", type=int, default=3, help="writes per size (default 3)")
 	ap.add_argument("-l", "--listen", type=int, default=0, metavar="SECS",
 			help="only listen on 0x83 for SECS seconds (DIN IN, no loopback needed)")
+	ap.add_argument("-t", "--trials", action="store_true",
+			help="count how many 9-byte writes each candidate init lets through")
 	args = ap.parse_args()
 
 	if os.geteuid() != 0:
@@ -278,7 +352,9 @@ def main():
 		print("\n== resetting the port")
 		print("   libusb_reset_device: %s" % name(usb.reset()))
 		time.sleep(0.5)
-		if args.listen:
+		if args.trials:
+			trial_main(usb)
+		elif args.listen:
 			listen(usb, args.listen)
 		else:
 			stage(usb, "as the driver sets it up, no handshake", (9, 42, 512), args.notes)

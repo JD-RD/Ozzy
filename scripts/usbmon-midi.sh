@@ -66,16 +66,18 @@ fi
 OUT=${OUT:-/tmp/us600-usbmon-$BUS-$DEVNUM-$(date +%H%M%S).txt}
 
 CARD=""
-for id in /proc/asound/card*/id; do
-	[ "$(cat "$id")" = "US600" ] || continue
-	idx=${id#/proc/asound/card}
-	CARD=/dev/snd/midiC${idx%%/*}D0
+# The card (and udev's node) can lag behind the module by a moment, e.g. when the
+# capture is started right after a reload.
+for try in $(seq 1 30); do
+	for id in /proc/asound/card*/id; do
+		[ "$(cat "$id" 2>/dev/null)" = "US600" ] || continue
+		idx=${id#/proc/asound/card}
+		[ -e "/dev/snd/midiC${idx%%/*}D0" ] && CARD=/dev/snd/midiC${idx%%/*}D0
+	done
+	[ -n "$CARD" ] && break
+	sleep 0.1
 done
-if [ ! -e "$CARD" ]; then
-	echo "no rawmidi node for the US-600 (is the module loaded?)" >&2
-	exit 1
-fi
-echo "== rawmidi: $CARD"
+[ -n "$CARD" ] && echo "== rawmidi: $CARD" || echo "== rawmidi: none yet, capturing without sending a note"
 
 errors_before=$(dmesg | grep -c 'MIDI output error')
 
@@ -92,8 +94,9 @@ if [ "$RELOAD" -eq 1 ]; then
 	sleep 1.5
 fi
 
-# one note on, 0.4 s, one note off
-python3 - "$CARD" <<'EOF'
+# one note on, 0.4 s, one note off (only when the rawmidi node is there)
+if [ -n "$CARD" ]; then
+	python3 - "$CARD" <<'EOF'
 import os, sys, time
 fd = os.open(sys.argv[1], os.O_WRONLY)
 for msg in (bytes([0x90, 0x24, 0x64]), bytes([0x80, 0x24, 0x00])):
@@ -102,6 +105,7 @@ for msg in (bytes([0x90, 0x24, 0x64]), bytes([0x80, 0x24, 0x00])):
 	time.sleep(0.4)
 os.close(fd)
 EOF
+fi
 
 sleep "$SECS"
 kill "$CAP" 2>/dev/null
