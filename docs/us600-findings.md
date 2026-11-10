@@ -240,6 +240,25 @@ Where Ozzy differs from it, worth testing one at a time (see `scripts/midi-probe
 The pulse and the `0x10` end state are the interesting part: Ozzy leaves bit 5 (0x20) set,
 mainline leaves bit 0 clear, and nobody has checked what the US-600's firmware wants there.
 
+## Session 2026-11-10, the official Windows package and the reference driver
+
+- Downloaded TASCAM's `US-600_v103rc1_win.zip` (v1.03rc1, 2015; the site answers **403**
+  without a browser `User-Agent`) and unpacked it (`7z x`, it is a 7-Zip SFX). Layout and what
+  each binary is: `.claude/re/tascam_us600.md`. The extracted copy sits outside the repo, in
+  `~/src/us600-driver-files/` (proprietary, not committed).
+- Three findings there that change the options: `tus600_m.sys` binds **interface 0** (the MIDI
+  pipes); `tus600_u.sys` is the Ploytec engine that owns every USB pipe, so the init is in it;
+  and there is **no per-device data table** (`0644:8035` appears only as VID/PID membership
+  predicates), so nothing can be lifted the way the macOS plist was.
+- `'M'` (0x4d, the 64-byte routing table) is **not** part of init: the only sender in
+  `tus600_u.sys` is the control-panel dispatch, which forwards a table the user supplied. Same
+  for `'B'` (0x42). So "the missing init is the 'M' table" is out.
+- **The device is known good**: its MIDI works with this unit under Windows and macOS (owner,
+  2026-11-10). Everything that is missing is in the initialisation, not in the hardware.
+- Next step: capture the official driver on the Windows 11 machine (plan phase 2c). The local
+  leads left are the `'I'` index-1 register (never touched by Ozzy) and the FIFO-drain metric in
+  `scripts/midi-probe.py -t`.
+
 ## Reproduce
 
 ```bash

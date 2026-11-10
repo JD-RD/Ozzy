@@ -31,19 +31,21 @@ IFACE #1 alt=1   EP 0x81 isoc IN   64 B int 4   EP 0x86 bulk IN 512 B
 | PCM in   | `0x86`   | 1         | bulk |
 | feedback | `0x81`   | 1         | isoc |
 
-- The module builds against `6.14.0-37-generic` (`make -C linux`), is **not** installed or
-  loaded at the moment (`driver=NONE`, no card, `modinfo` finds nothing).
-- Baseline from the previous session (`e0345d9`, see `us600-findings.md`): **audio works**,
-  **MIDI out fails with `-EPROTO` on every 9-byte transfer** (one per ms, timer path), **MIDI
-  in is silent** (URBs submitted, never complete with data).
+- The module builds and loads on `6.14.0-37-generic`; card 1 `US600` with `pcm0p` / `pcm0c` /
+  `midi0` and the ten controls. Playback and 6-channel capture work (`rc=0`).
+- **Both MIDI directions fail at the USB level while the driver streams**: every completion on
+  `0x04` and `0x83` is `-EPROTO` (`scripts/usbmon-midi.sh`: 3170/3170 OUT, 29 331/29 331 IN in
+  two seconds), while `0x02`, `0x81` and `0x86` all complete with status 0.
+- With the driver unloaded and the port reset (`scripts/midi-probe.py`), `0x04` **accepts** 9 and
+  42 bytes and only NAKs 512; `0x83` never delivers a byte; the `0x04` FIFO holds two 9-byte
+  frames and **never drains**. So the device is not refusing the pipes, and its MIDI
+  transmitter is not running.
+- The device is known good: **its MIDI works with this unit on Windows and macOS** (owner,
+  2026-11-10). Whatever is missing is in the init, not in the hardware.
 - Power: the configuration descriptor says 256 mA, sysfs reports 480 mA. Relevant on the Pi.
 
-A note on the framing hypothesis in `us600-findings.md` §"Working hypotheses" 1: the official
-Tascam kext uses `kInACR 3` -> `inACR_M4_C1`, i.e. 9-byte MIDI transfers, exactly what Ozzy
-sends today (`.claude/re/device_inventory.md`, `akai_eie_pro.md` §6). The framing is therefore
-probably right, and `-EPROTO` on a bulk OUT endpoint looks more like an endpoint that is not
-(yet) accepting data — a missing initialisation — than like a wrong transfer size. That
-reorders the hypotheses, it does not remove any of them.
+See `us600-findings.md` for the measurements and `.claude/re/tascam_us600.md` for the device and
+the official driver (who binds what, why `'M'` is not the gate, mainline's us122l as reference).
 
 ## Phase 0 — Baseline (done)
 
@@ -67,8 +69,9 @@ kept in `docs/logs/` (`*.log` is gitignored, so the directory has to be created)
 
 ## Phase 2 — Mint: MIDI
 
-The old plan made a Windows USBPcap capture blocking. We try to settle it locally first; the
-Windows capture becomes the fallback (see below), not the gate.
+2a and 2b are done and narrowed it to "the device's MIDI engine is not running, and our driver
+however is what makes it visible as `-EPROTO`". The official driver's behaviour on the same
+device is now the shortest path to the missing initialisation: see 2c.
 
 ### 2a. See what the device actually does (`usbmon`)
 
@@ -91,6 +94,9 @@ Look at: the exact URB length and payload on `0x04`, whether the completion is a
 (`-EPIPE`) or a protocol error (`-EPROTO`), whether anything is ever submitted/completed on
 `0x83`, and what the control pipe does around start/stop (vendor `'I'`, `'V'`, `'A'`,
 SET_CUR on `0x86`).
+
+**Done (2026-11-10):** every completion on `0x04` and `0x83` is `-EPROTO` while the driver
+streams; `0x02` / `0x81` / `0x86` are clean. Numbers in `us600-findings.md`.
 
 ### 2b. Ask the device directly (`usbfs`, no rebuild)
 
@@ -116,11 +122,43 @@ What the probe covers (and what each result would mean):
 | MIDI inside PCM out `0x02`, Xone layout (not in the tool yet) | hypothesis 3: DIN MIDI fed by the PCM stream |
 | bulk IN `0x83` 9 / 42 / 512 bytes, DIN loopback fitted | which size makes MIDI in flow |
 
+**Done (2026-11-10):** with the driver unloaded, `0x04` accepts 9 and 42 bytes and NAKs 512;
+`0x83` never delivers; `CLEAR_HALT`, the alt combinations and both `'I'` variants change
+nothing; the `0x04` FIFO holds two frames and never drains. Measurements in
+`us600-findings.md`.
+
 Every run prints the return code / errno and the bytes read. This distinguishes "wrong size"
 from "endpoint not enabled" from "MIDI is elsewhere" without touching the driver, and gives
 us the exact list of requests to add if initialisation is missing.
 
-### 2c. Decide, then implement behind a quirk
+### 2c. Capture the official driver (next step, needs the Windows 11 machine)
+
+The device's MIDI works under Windows and macOS with this unit, so the answers are in the
+official driver's traffic. Capture it with USBPcap, four short sessions:
+
+| file | what to do |
+|---|---|
+| `1-start.pcapng` | start the capture, then replug the US-600, wait ~10 s: the init requests and their order relative to streaming |
+| `2-idle.pcapng` | 10 s idle: whether Windows sends MIDI at rest, of what size, and how the device answers |
+| `3-note-out.pcapng` | one note from a MIDI app, ideally with audio playing: sizes and byte patterns on `0x04` |
+| `4-note-in.pcapng` | one note from the TR-8 into the DIN IN: sizes on `0x83` |
+
+- Driver package: `https://www.tascam.eu/sw/us-600/US-600_v103rc1_win.zip` (403 without a
+  browser `User-Agent`); the downloaded and extracted copy for this bench lives outside the
+  repo, in `~/src/us600-driver-files/` (proprietary, nothing to commit). Its layout is in
+  `.claude/re/tascam_us600.md`.
+- Wireshark + the USBPcap component, display filter `usb.idVendor == 0x0644 && usb.idProduct ==
+  0x8035`, then *File > Export Specified Packets > Displayed*.
+- Deliverables: `docs/captures/*.pcapng` plus the table of transfers (endpoint, size, payload,
+  interval) and control requests (`bmRequestType`, `bRequest`, `wValue`, `wIndex`, `wLength`).
+  Facts go to `.claude/re/tascam_us600.md`, the measurements to `us600-findings.md`.
+
+What the capture settles: whether the MIDI pipes are driven with 9-byte frames (and how often),
+whether the device stalls/NAKs/errors them, whether MIDI coexists with PCM streaming, and the
+one or two vendor requests the official driver sends that Ozzy does not — the answer to "what
+starts the transmitter".
+
+### 2d. Decide, then implement behind a quirk
 
 | finding in 2a/2b | change |
 |---|---|
@@ -174,18 +212,6 @@ Report on `mischa85/Ozzy` (issue with `dmesg`, descriptors, usbmon/usbfs evidenc
 US-600 row can move from `EXPERIMENTAL` to `SUPPORTED`, or so the maintainer can point at
 what is missing. If the fix is small and generic, prepare a PR: device row + quirk + test,
 no unrelated reformatting.
-
-## Fallback: the Windows capture (the old M1)
-
-Only if 2a/2b leave the protocol ambiguous. Needs a Windows host and the official TASCAM
-driver (`US-600_v103rc1_win.zip`, Ploytec engine) with USBPcap + Wireshark:
-
-1. plug-in only — init requests at open, idle MIDI-out transfer sizes,
-2. one note out — sizes and byte patterns on `0x04`,
-3. one note in — sizes on `0x83`, and whether `0x02` PCM packets carry MIDI slots.
-
-Deliverables: `docs/captures/*.pcapng` plus the table of transfers (endpoint, size, payload,
-interval) and control requests (`bmRequestType`, `bRequest`, `wValue`, `wIndex`, `wLength`).
 
 ## Conventions
 

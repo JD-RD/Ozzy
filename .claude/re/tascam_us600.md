@@ -74,4 +74,9 @@ Same family, same endpoints, GPL-2.0 so facts only:
 - What starts the US-600's MIDI transmitter (the FIFO that never drains). Candidates: the `'I'`
   index-1 (mixer/chassis config) register that Ozzy never reads, a mixer-mode write, or the
   rate/stream state. `scripts/midi-probe.py -t` measures the FIFO drain after each candidate.
-- Whether this unit's MIDI has ever worked (nobody has tested it on Windows/macOS here).
+- The device is **not** faulty: its MIDI works with this unit on Windows and macOS (owner,
+  2026-11-10). So the answer is in the official driver's traffic; TASCAM's Windows package is
+  now at hand (`~/src/us600-driver-files/`, see above) and the next step is to capture it with
+  USBPcap on a Windows 11 machine (plan phase 2c).
+- Where the US-600-specific initialisation is in `tus600_u.sys`: it is code, not data (no
+  per-device table), so it has to be traced by hand. Entry points are listed above.
