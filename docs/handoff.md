@@ -32,18 +32,29 @@ nothing to do with either.
 
 ## The one open question
 
-> What puts the device into the `-EPROTO` state on a host that does not lose its FSM, and can a
-> driver avoid it?
+> What puts the device into the `-EPROTO` state, and can a driver avoid it?
 
-On the Pi the storm is explained (above). On Mint it was not reproducible once the device had a
-real power cycle, and nothing we can do deliberately — module reload, port reset, the full
-`usbfs` probe, engine start/stop, rawmidi open/close — brings it back. Two things to remember:
+**2026-11-11 gave it a trigger and a clock.** On the Pi, with the TR-8 looping into the US-600,
+the device went from healthy to `-EPROTO` on its own **after ~8 minutes**: every bulk transfer
+(`0x04`, `0x83`, `0x86`) completed `-71` with length 0, `Rx`/`Tx` froze, `Ozzy Stats` reached
+35 M errors on the `in` direction and a 494 s gap, and the isochronous direction stayed clean.
+`dmesg` had no `dwc_otg` warning — the device, not the host controller (which had its own,
+section above). It was cured by the usual external-supply **and** USB off, 10 s, and the same
+load then ran healthy again. So the next run has something to bisect: does it come back after
+~8 minutes every time, and does it follow the MIDI-in traffic (clock? notes? both?), or the
+isochronous playback that keeps running because a rate was set?
+
+On Mint it was never reproduced this way; there the state only appeared on a device that had
+never had a real power cycle. Two things to remember:
 
 - `scripts/midi-health.sh` is the one-number test: it opens playback (the driver submits no MIDI
   URB at all without a running PCM substream, so "0 errors" at rest proves nothing), counts
-  `[ploytec] isoc: MIDI output error` for 2 s, and prints `healthy` / `unhealthy`.
-- On a `dwc_otg` host, "unhealthy" now means the FIQ FSM first (§above). Check
-  `dmesg | grep 'FSM NP transfer'` before blaming the device.
+  `[ploytec] isoc: MIDI output error` for 2 s, and prints `healthy` / `unhealthy`. The caveat
+  only holds with no stream open: with the chain running, MIDI URBs are being submitted.
+- On a `dwc_otg` host, "unhealthy" can also mean the FIQ FSM (§above). Check
+  `dmesg | grep 'FSM NP transfer'` before blaming the device: with it, the FSM warnings are
+  there and the isochronous side follows; with the device state, only bulk fails and `dmesg` is
+  silent.
 
 ## Next steps, in order
 

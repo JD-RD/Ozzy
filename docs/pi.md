@@ -161,6 +161,18 @@ Then the real chain for an hour: TR-8 pads → SP-404MK2, watching
   The known cure for the `-EPROTO` state is external supply **and** USB off for ~10 s.
 - **The ALSA sequencer subscription does not survive a suspend**; the sleep hook installed by
   `install.sh` restarts the service, which is what re-subscribes.
+- **The device falls into the `-EPROTO` state on its own**, and it was measured here for the
+  first time: after ~8 minutes of steady MIDI-in traffic (TR-8 clock + notes) every bulk
+  transfer (`0x04`, `0x83`, `0x86`) completes `-71` with length 0 while the isochronous
+  direction stays at 0, `Rx`/`Tx` freeze, and `Ozzy Stats` counts errors by the million
+  (`in` 35 M, gap 494 s). No `dwc_otg` warning: it is the device, not the host. Cure: external
+  supply **and** USB off for 10 s. Watch `scripts/pi-bench.sh -c` or a one-minute sampler.
+- **The ALSA sequencer subscription does not survive a replug** (not just a suspend): the
+  service keeps running, `aconnect` shows the port and its clients, and there is no link and no
+  journal line. `scripts/pi/70-us600-remap.rules` (installed by `install.sh`) restarts the unit
+  on the device's `add` event.
+- `journalctl -k | grep -c 'MIDI output error'` **understates a storm**: journald rate-limits
+  duplicates, so the count wanders down between two samples while `Ozzy Stats` only grows.
 - **The 6-channel capture is paced on the Pi** (`arecord -d 2` takes 2.0 s), unlike the Mint
   bench, where the same command returned in ~0.14 s. If the Pi shows xruns, the knobs are
   `PCM Capture Transfer` / `PCM Capture Queue` (ALSA controls; `amixer -c 0 sset` works, no
