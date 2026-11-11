@@ -33,16 +33,19 @@ IFACE #1 alt=1   EP 0x81 isoc IN   64 B int 4   EP 0x86 bulk IN 512 B
 
 - The module builds and loads on `6.14.0-37-generic`; card 1 `US600` with `pcm0p` / `pcm0c` /
   `midi0` and the ten controls. Playback and 6-channel capture work (`rc=0`).
-- **Both MIDI directions fail at the USB level while the driver streams**: every completion on
-  `0x04` and `0x83` is `-EPROTO` (`scripts/usbmon-midi.sh`: 3170/3170 OUT, 29 331/29 331 IN in
-  two seconds), while `0x02`, `0x81` and `0x86` all complete with status 0.
-- With the driver unloaded and the port reset (`scripts/midi-probe.py`), `0x04` **accepts** 9 and
-  42 bytes and only NAKs 512; `0x83` never delivers a byte; the `0x04` FIFO holds two 9-byte
-  frames and **never drains**. So the device is not refusing the pipes, and its MIDI
-  transmitter is not running.
-- The device is known good: **its MIDI works with this unit on Windows and macOS** (owner,
-  2026-11-10). Whatever is missing is in the init, not in the hardware.
-- Power: the configuration descriptor says 256 mA, sysfs reports 480 mA. Relevant on the Pi.
+- **Both MIDI directions work** on a properly power-cycled device (`scripts/midi-health.sh` →
+  `0` errors in 2 s; `usbmon`: 4170/4170 on `0x04` and 227/227 on `0x83`, all
+  `USBD_STATUS_SUCCESS`; a note completes in 30 µs). Verified over 20 minutes of streaming, 12
+  engine start/stop cycles, a module reload and the full `usbfs` probe — see
+  `docs/us600-findings.md`, sessions 19:41 and 20:1x.
+- The earlier `-EPROTO` on every MIDI transfer was **a state of the device, not a driver bug**.
+  It was seen twice, both times on a unit that had never been through a real power cycle (its
+  external supply keeps the firmware alive through a USB-only replug), and no sequence we can
+  execute deliberately reproduces it now. The known cure is external supply **and** USB
+  unplugged for ~10 s. What puts the device there is the open question, not what the init lacks.
+- The device is known good: its MIDI also works with this unit on Windows and macOS.
+- Power: the descriptor says 240 mA bus-powered (`bmAttributes 0x80`), sysfs reports 480 mA, and
+  the unit has an external supply. Relevant on the Pi.
 
 See `us600-findings.md` for the measurements and `.claude/re/tascam_us600.md` for the device and
 the official driver (who binds what, why `'M'` is not the gate, mainline's us122l as reference).
@@ -69,9 +72,12 @@ kept in `docs/logs/` (`*.log` is gitignored, so the directory has to be created)
 
 ## Phase 2 — Mint: MIDI
 
-2a and 2b are done and narrowed it to "the device's MIDI engine is not running, and our driver
-however is what makes it visible as `-EPROTO`". The official driver's behaviour on the same
-device is now the shortest path to the missing initialisation: see 2c.
+2a and 2b are done. They narrowed the failure to "every MIDI transfer is refused while the PCM
+pipes are clean", and 2c captured the official driver. The answer 2d was waiting for turned out
+to be **no driver change**: on a properly power-cycled device both directions work, and the
+`-EPROTO` state is the device's, not the init's (`docs/us600-findings.md`, 19:41 and 20:1x).
+Phase 2 is therefore closed without code; what remains is validation (phase 3) and the open
+question of what puts the device into that state.
 
 ### 2a. See what the device actually does (`usbmon`)
 
@@ -159,6 +165,12 @@ one or two vendor requests the official driver sends that Ozzy does not — the 
 starts the transmitter".
 
 ### 2d. Decide, then implement behind a quirk
+
+**Closed 2026-11-10 without a change.** None of the rows below was needed: the transfers are the
+right size (9 bytes), the framing was already right (one message, `0xFD` padding, `0xE0` last
+out), no control request from the official driver's init makes the FIFO drain (the `'A'` block
+was replayed and changed nothing), no halt was involved, and MIDI does not ride in the PCM
+stream. Kept as the table to come back to if the `-EPROTO` state is ever made reproducible.
 
 | finding in 2a/2b | change |
 |---|---|
