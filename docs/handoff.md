@@ -39,18 +39,14 @@ power-cycle the hardware. Two observations to start from:
 
 ## Next steps, in order
 
-1. **Validation (plan phase 3), the only thing left before the Pi.** Needs two pieces of
-   hardware that were missing on 2026-11-10: a **DIN OUT → IN cable** (no loopback was fitted
-   then: a note sent on `0x04` never came back on `0x83`) and a **powered MIDI source** (`amidi
-   -d` received nothing at 19:00, while at 18:19 the same setup was delivering the TR-8's clock
-   and active sensing).
-   - `scripts/midi-loop-test.sh -s 30` with the cable fitted: every byte back, zero errors.
-   - `sudo scripts/usbmon-midi.sh -s 3`: the wire-level proof (`errors 0` on `0x04` and `0x83`).
-   - the real chain: TR-8 OUT → US-600 IN, US-600 OUT → SP-404 IN, notes 36-51, one pad per
-     instrument.
-   - audio at 44.1 / 48 / 88.2 / 96 kHz, 6 in / 4 out; unplug/replug; suspend/resume.
-2. **Raspberry Pi 3B (plan phase 4)** — build on the Pi, powered hub if it browns out, run
-   `tr8-remap.service` from boot, watch an hour for xruns.
+1. **Raspberry Pi 3B (plan phase 4)**, now the next thing: build on the Pi, powered hub if it
+   browns out, `tr8-remap.service` from boot, an hour of the real chain and watch for xruns.
+   Two things to carry over: the ALSA sequencer subscription does not survive a suspend (the
+   service has to re-subscribe or be restarted by a sleep hook), and the 6-channel capture is not
+   paced to real time here, so xruns are the thing to look for first.
+2. **The instrument mapping (notes 36-51)** in `~/src/tr8-remap`, on the bench:  `pip install
+   --user mido python-rtmidi`, then `--in US-600 --out US-600` (the same port is both, so the
+   substring matches are not ambiguous — each is looked up in its own list).
 3. **Upstream (plan phase 5)** — the US-600 row can arguably leave `EXPERIMENTAL`: the captures
    and the measurements say the device is not the problem. Report with the init table and the
    framing, and say plainly that the `-EPROTO` state is a device state we could not reproduce.

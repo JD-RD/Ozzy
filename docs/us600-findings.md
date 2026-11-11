@@ -572,6 +572,11 @@ default across a suspend, then 48000 is written and confirmed and the stream res
 sequencer subscription, by contrast, does **not** survive: any client has to re-subscribe (or
 restart) after a resume, which is an operational requirement for `tr8-remap.service` on the Pi.
 
+**Power cycle: passed** too. External supply **and** USB unplugged ~10 s, then back: bus 2
+device **025**, `midi-health.sh` → `0`, `aconnect 20:0 20:0` restored the thru, and a TR-8 pad
+still lit its pad on the SP-404MK2. **Phase 3 is closed**: four rates, DIN loopback, the real
+chain, suspend/resume and the power cycle all measured on this bench.
+
 ## Reproduce
 
 ```bash
