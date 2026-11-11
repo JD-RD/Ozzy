@@ -45,6 +45,10 @@ say "module snd-usb-ozzy"
 
 say "service tr8-remap"
 install -m 644 "$HOME_PI/tr8-remap/tr8-remap.service" /etc/systemd/system/tr8-remap.service
+# Le répertoire des hooks de veille n'existe pas sur l'image Trixie nue :
+# sans ce mkdir, `install` échoue et `set -e` coupe le script juste avant
+# `systemctl enable` (constaté au premier passage sur le 3B, 2026-11-11).
+install -d /usr/lib/systemd/system-sleep
 install -m 755 "$HOME_PI/tr8-remap/systemd-sleep/tr8-remap" /usr/lib/systemd/system-sleep/tr8-remap
 systemctl daemon-reload
 systemctl enable tr8-remap.service
