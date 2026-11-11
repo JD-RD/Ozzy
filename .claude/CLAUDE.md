@@ -34,6 +34,9 @@ diagnosis with usbmon/usbfs, validation, upstream), with the machine state it st
 - `docs/us600-findings.md` — the US-600's dated measurements: what works, the `-EPROTO`
   device state and how it was cornered, the official Windows driver's capture, and the validation
   runs with a DIN loopback
+- `docs/pi.md` — the Raspberry Pi 3B side: the image and its hashes, how this card is configured
+  (cloud-init, `scripts/pi-card-setup.sh`), the first boot, the install, and the order to check
+  things on the Pi
 
 Work on the `us600-midi` branch; `upstream` is read-only. When a bring-up answers a protocol
 question, move the fact into `.claude/re/` as usual.

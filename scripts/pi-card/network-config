@@ -1,0 +1,22 @@
+# Configuration réseau du premier démarrage (netplan v2, lu par cloud-init).
+# Indentation : espaces uniquement.
+
+network:
+  version: 2
+
+  # Ethernet : laissé en DHCP, il sert de secours si le WiFi ne monte pas.
+  ethernets:
+    eth0:
+      dhcp4: true
+      optional: true
+
+  wifis:
+    wlan0:
+      dhcp4: true
+      # true : le premier démarrage n'attend pas le réseau indéfiniment.
+      # Les paquets sont installés avec trois essais côté user-data.
+      optional: true
+      regulatory-domain: CA
+      access-points:
+        "@SSID@":
+          password: "__WIFI_PSK__"

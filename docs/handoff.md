@@ -39,15 +39,16 @@ power-cycle the hardware. Two observations to start from:
 
 ## Next steps, in order
 
-1. **Raspberry Pi 3B (plan phase 4)**, now the next thing: build on the Pi, powered hub if it
-   browns out, `tr8-remap.service` from boot, an hour of the real chain and watch for xruns.
-   The two carry-overs are already patched on the other side, in `~/src/tr8-remap` (no git there):
-   `remap.py` now waits up to 30 s for its MIDI port instead of exiting (which made systemd
-   restart-loop and fill the journal), a `systemd-sleep/tr8-remap` hook restarts the service after
-   a resume (the ALSA sequencer subscription does not survive it, and `Restart=always` never sees
-   the silent stop), and the unit carries both `ExecStart` variants with the **US-600** one active.
-   The remaining risk is the 6-channel capture not being paced to real time here: xruns are the
-   thing to look for first.
+1. **Raspberry Pi 3B (plan phase 4)**, now the next thing — and **the card is ready**: Raspberry
+   Pi OS Lite 64-bit Trixie (2026-10-06) written and configured with cloud-init, the two trees
+   and an `install.sh` on it, waiting for a first boot that has not been observed yet. The whole
+   recipe, the hashes, what is on the card and what to check on the Pi in order: **`docs/pi.md`**.
+   The carry-overs from this bench are already patched on the other side, in `~/src/tr8-remap`
+   (now a git repository, initial commit `4e080c6`): `remap.py` waits up to 30 s for its MIDI
+   port instead of exiting (which made systemd restart-loop), a `systemd-sleep/tr8-remap` hook
+   restarts the service after a resume, and the unit carries both `ExecStart` variants with the
+   **US-600** one active. The risk left is the 6-channel capture not being paced to real time
+   here: xruns are the thing to look for first.
 2. **The instrument mapping (notes 36-51)** in `~/src/tr8-remap`, on the bench:  `pip install
    --user mido python-rtmidi`, then `--in US-600 --out US-600` (the same port is both, so the
    substring matches are not ambiguous — each is looked up in its own list).
@@ -66,6 +67,11 @@ power-cycle the hardware. Two observations to start from:
 - Branch `us600-midi` (ahead of `upstream/main`, `e0345d9`). The Windows captures are in
   `~/src/us600-captures/` (587 MB, **not** committed); the TASCAM package (proprietary) in
   `~/src/us600-driver-files/`; the reverse-engineering notes in `.claude/re/tascam_us600.md`.
+- SD card for the Pi: written 2026-11-10 (see `docs/pi.md`), 59.5 GB, `bootfs` holds
+  `user-data` / `network-config` (placeholders `__PI_PASSWORD_HASH__` and `__WIFI_PSK__` to be
+  filled from the dev machine) and `us600-setup/` (both trees + `install.sh`). The card's
+  configuration is reproducible: `scripts/pi-card-setup.sh` plus the templates in
+  `scripts/pi-card/`.
 
 ## Tools (all in `scripts/`)
 
@@ -77,6 +83,7 @@ power-cycle the hardware. Two observations to start from:
 | `midi-loop-test.sh` | no | notes out, report `Tx`/`Rx` deltas and error count |
 | `usbmon-midi.sh` | yes | capture the bus while sending a note; `-m` reloads the module inside the capture, `-p`/`-c` hold playback/capture open, prints per-endpoint submitted/completed/**errors** |
 | `midi-probe.py` | yes | module unloaded, `libusb_reset_device`, talks to `0x04`/`0x83` directly; `-l SECS` listens, `-t` replays candidate inits, `-R {both,pulse,rate81}` applies the us122l handshake only, `-N` skips the port reset |
+| `pi-card-setup.sh` | no | fills `user-data` / `network-config` on a mounted Pi `bootfs`, builds the two `git archive` tarballs, drops `us600-setup/`; see `docs/pi.md` |
 
 ## Facts already established (do not re-derive)
 

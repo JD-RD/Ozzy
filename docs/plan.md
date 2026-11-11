@@ -213,20 +213,26 @@ mapping, which belongs to `~/src/tr8-remap`.
 
 ## Phase 4 — Raspberry Pi 3B
 
-1. OS and headers: Raspberry Pi OS (64-bit or 32-bit — both fine, the module is plain C),
-   `sudo apt install linux-headers-$(uname -r)` (or `raspberrypi-kernel-headers` on older
-   images).
-2. Build on the Pi from this tree: `make -C linux KERNELDIR=/lib/modules/$(uname -r)/build`,
-   then `sudo make modules_install && sudo depmod -a && sudo modprobe snd-usb-ozzy`.
-   `scripts/build-load.sh` does all of it.
+**Status 2026-11-10: the card is written and configured, the first boot has not been observed.**
+Raspberry Pi OS Lite 64-bit Trixie (2026-10-06), cloud-init configured for `us600` / `pi` /
+SSH key / WiFi, both trees and an idempotent `install.sh` on `bootfs`. Everything about the
+image, the hashes, the card contents and the order to check things on the Pi lives in
+**`docs/pi.md`**; the card is reproduced with `scripts/pi-card-setup.sh`.
+
+1. ~~OS and headers~~ Chosen and written (Lite 64-bit: no PipeWire/PulseAudio to fight over the
+   ALSA sequencer). `linux-headers-$(uname -r)` is installed by `install.sh`.
+2. ~~Build on the Pi from this tree~~ `scripts/build-load.sh` builds, installs, `depmod`s and
+   `modprobe`s; `install.sh` calls it.
 3. Power: the 3B shares 1.2 A across its ports and the US-600 claims up to 480 mA (more with
    the 48 V phantom supply). Use a powered hub if the device resets, capture babbles or the
    card disappears under load — check `dmesg` for over-current / disconnect first.
 4. Confirm the transports on the 3B's host controller: PCM out is isochronous (`0x02`, 156 B,
    interval 1) and PCM in is bulk (`0x86`) — watch for `-EOVERFLOW` on capture and for
-   `xrun`s.
+   `xrun`s. Known starting point from Mint: the 6-channel capture is not paced to real time,
+   and one 96 kHz capture returned `EIO` in a back-to-back rate sweep.
 5. Run the real chain and `tr8-remap.service` from boot; leave it an hour and check both
-   `/proc/asound/card*/pcm*/sub*/status` and the counters.
+   `/proc/asound/card*/pcm*/sub*/status` and the counters. The service re-subscribes after a
+   resume thanks to the `systemd-sleep` hook, and waits up to 30 s for its MIDI port at boot.
 6. If the 3B struggles (xruns, late completions), reduce what the host asks for: on this
    isochronous family only the capture side is a setting, e.g.
    `ozzy-cli set pcm-capture-transfer 8-frames pcm-capture-queue 2-transfers`

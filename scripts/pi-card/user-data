@@ -1,0 +1,50 @@
+#cloud-config
+# Configuration du premier démarrage — banc US-600 / TR-8 / SP-404MK2.
+# Écrite à la main (pas par rpi-imager) : voir us600-setup/README.txt.
+# Indentation : espaces uniquement.
+
+hostname: @HOSTNAME@
+manage_etc_hosts: true
+disable_root: true
+
+# Mot de passe SSH : la clé ci-dessous suffit pour entrer. ssh_pwauth reste vrai
+# pour que `sudo` puisse demander un mot de passe si l'on en définit un ; tant
+# que __PI_PASSWORD_HASH__ n'est pas remplacé, aucun mot de passe n'est valide
+# et le compte ne s'ouvre que par clé.
+ssh_pwauth: true
+
+users:
+  - name: pi
+    gecos: pi
+    shell: /bin/bash
+    lock_passwd: false
+    passwd: "__PI_PASSWORD_HASH__"
+    sudo: "ALL=(ALL) ALL"
+    groups: [adm, dialout, cdrom, sudo, audio, video, plugdev, games, users,
+             input, render, netdev, gpio, i2c, spi]
+    ssh_authorized_keys:
+      - @SSH_KEY@
+
+
+runcmd:
+  - [ systemctl, enable, --now, ssh ]
+
+  # Locale, fuseau, clavier, domaine radio WiFi : via raspi-config, qui sait
+  # aussi générer la locale (ce que cloud-init ne fait pas ici).
+  - [ sh, -c, "raspi-config nonint do_change_locale fr_CA.UTF-8 || true" ]
+  - [ sh, -c, "raspi-config nonint do_change_timezone America/Toronto || true" ]
+  - [ sh, -c, "raspi-config nonint do_configure_keyboard cf || true" ]
+  - [ sh, -c, "raspi-config nonint do_wifi_country CA || true" ]
+
+  # Paquets : trois essais, parce qu'au premier démarrage le WiFi peut mettre
+  # quelques secondes à monter.
+  - [ sh, -c, "for i in 1 2 3; do apt-get update && apt-get install -y --no-install-recommends python3-mido python3-rtmidi alsa-utils build-essential git rsync avahi-daemon && break; sleep 20; done || true" ]
+  - [ sh, -c, "apt-get install -y linux-headers-$(uname -r) || apt-get install -y raspberrypi-kernel-headers || true" ]
+
+  # Les deux dépôts, tels quels (git archive), prêts pour us600-setup/install.sh.
+  - [ sh, -c, "for n in us600-linux tr8-remap; do mkdir -p /home/pi/$n; tar -xzf /boot/firmware/us600-setup/$n.tar.gz -C /home/pi; done; chown -R pi:pi /home/pi/us600-linux /home/pi/tr8-remap" ]
+
+  # Repère lisible dans le journal de cloud-init.
+  - [ sh, -c, "echo 'us600-setup : paquets + dépôts prêts, lancer sudo sh /boot/firmware/us600-setup/install.sh' >> /var/log/us600-setup.log" ]
+
+final_message: "us600 prêt : ssh pi@us600.local puis sudo sh /boot/firmware/us600-setup/install.sh"
