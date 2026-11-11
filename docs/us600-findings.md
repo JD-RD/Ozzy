@@ -564,6 +564,14 @@ is for; it is not a driver matter.
 So both directions are proven on the wire and through real gear. What remains for phase 3:
 replug (external supply **and** USB), suspend/resume, and the 36-51 mapping in `tr8-remap`.
 
+**Suspend/resume: passed** (2026-11-10, `PM: suspend entry (deep)` 995928 → `exit` 995929). The
+device keeps its address (device 024), the card comes back, `midi-health.sh` reports `0` twice,
+and `dmesg` shows the driver re-running the whole handshake on resume — reading **96000 Hz**
+from the rate register again, i.e. the device puts its USB-side state back to the power-on
+default across a suspend, then 48000 is written and confirmed and the stream restarts. The ALSA
+sequencer subscription, by contrast, does **not** survive: any client has to re-subscribe (or
+restart) after a resume, which is an operational requirement for `tr8-remap.service` on the Pi.
+
 ## Reproduce
 
 ```bash
