@@ -213,30 +213,35 @@ mapping, which belongs to `~/src/tr8-remap`.
 
 ## Phase 4 — Raspberry Pi 3B
 
-**Status 2026-11-10: the card is written and configured, the first boot has not been observed.**
-Raspberry Pi OS Lite 64-bit Trixie (2026-10-06), cloud-init configured for `us600` / `pi` /
-SSH key / WiFi, both trees and an idempotent `install.sh` on `bootfs`. Everything about the
-image, the hashes, the card contents and the order to check things on the Pi lives in
-**`docs/pi.md`**; the card is reproduced with `scripts/pi-card-setup.sh`.
+**Status 2026-11-11: the Pi 3B runs the bench.** First boot observed, module built and loaded
+on the Pi, audio transports measured, `tr8-remap.service` running from boot. One blocker found
+and fixed: `dwc_otg`'s FIQ FSM wedged the bulk pipes (`Timed out waiting for FSM NP transfer`),
+which looked like a rate-dependent `EIO`; `dwc_otg.fiq_fsm_enable=0` in `cmdline.txt` clears it
+and `scripts/pi-bench.sh -c` now passes 14/14. Measurements: `docs/us600-findings.md`,
+2026-11-11. Remaining: the one-hour soak with the real chain (item 5).
 
-1. ~~OS and headers~~ Chosen and written (Lite 64-bit: no PipeWire/PulseAudio to fight over the
-   ALSA sequencer). `linux-headers-$(uname -r)` is installed by `install.sh`.
+1. ~~OS and headers~~ Raspberry Pi OS Lite 64-bit Trixie (2026-10-06): no PipeWire/PulseAudio to
+   fight over the ALSA sequencer. `linux-headers-$(uname -r)` present for `6.18.50+rpt-rpi-v8`.
 2. ~~Build on the Pi from this tree~~ `scripts/build-load.sh` builds, installs, `depmod`s and
-   `modprobe`s; `install.sh` calls it.
-3. Power: the 3B shares 1.2 A across its ports and the US-600 claims up to 480 mA (more with
-   the 48 V phantom supply). Use a powered hub if the device resets, capture babbles or the
-   card disappears under load — check `dmesg` for over-current / disconnect first.
-4. Confirm the transports on the 3B's host controller: PCM out is isochronous (`0x02`, 156 B,
-   interval 1) and PCM in is bulk (`0x86`) — watch for `-EOVERFLOW` on capture and for
-   `xrun`s. Known starting point from Mint: the 6-channel capture is not paced to real time,
-   and one 96 kHz capture returned `EIO` in a back-to-back rate sweep.
+   `modprobe`s; `install.sh` calls it. Done, aarch64, no warnings that matter.
+3. ~~Power~~ No over-current, no disconnect across ~22 000 transfers, four rates and a
+   concurrent playback+capture, on the 3B's own ports (device behind the onboard SMSC hub).
+4. ~~Transports on the 3B's host controller~~ PCM out isochronous (`0x02`, 156 B, interval 1)
+   and PCM in bulk (`0x86`) as on Mint; every rate passes both directions, and the 6-channel
+   capture **is** paced here (2.0 s for 2 s), unlike Mint. The `EIO` was `dwc_otg`, not the
+   driver: see item 7 and `docs/pi.md` §5.
 5. Run the real chain and `tr8-remap.service` from boot; leave it an hour and check both
    `/proc/asound/card*/pcm*/sub*/status` and the counters. The service re-subscribes after a
    resume thanks to the `systemd-sleep` hook, and waits up to 30 s for its MIDI port at boot.
-6. If the 3B struggles (xruns, late completions), reduce what the host asks for: on this
-   isochronous family only the capture side is a setting, e.g.
-   `ozzy-cli set pcm-capture-transfer 8-frames pcm-capture-queue 2-transfers`
-   (smaller transfer, fewer in flight). The defaults are a starting point, not a rule.
+   **In progress**: it is `active` since boot and the port is subscribed; the hour is next.
+6. If the 3B struggles (xruns, late completions), reduce what the host asks for: the capture
+   transfer and queue are plain ALSA controls, e.g. `amixer -c 0 sset 'PCM Capture Transfer'
+   '8 frames'` and `'PCM Capture Queue' '2 transfers'` (or `pi-bench.sh -t 8 -q 2`, which
+   measures the pair). Not needed so far: 18 short transfers in ~22 800, 0 errors, 0 late.
+7. ~~Host controller~~ `dwc_otg.fiq_fsm_enable=0` in `/boot/firmware/cmdline.txt` (reboot).
+   Without it, the FSM stops completing non-periodic transfers and everything downstream fails
+   in silence; `install.sh` adds it on a `dwc_otg` host. This is a Pi workaround, not a driver
+   change, so it does not travel to Phase 5.
 
 ## Phase 5 — Upstream
 

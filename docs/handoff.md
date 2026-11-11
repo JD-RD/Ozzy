@@ -1,83 +1,95 @@
-# Handoff — US-600 on Linux (Mint, then Raspberry Pi 3B)
+# Handoff — US-600 on Linux (Mint bench, and the Pi 3B now runs the chain)
 
-Rewritten 2026-11-10 at the end of the session that closed the MIDI question. Read this first,
-then `docs/plan.md` (the plan) and `docs/us600-findings.md` (the measurements, with dates).
-Delete or rewrite this file when it no longer matches reality — a stale handoff is worse than
-none.
+Rewritten 2026-11-11, at the end of the session that booted the Raspberry Pi 3B for the first
+time and found out why it could not stream. Read this first, then `docs/plan.md` (the plan) and
+`docs/us600-findings.md` (the measurements, with dates). Delete or rewrite this file when it no
+longer matches reality — a stale handoff is worse than none.
 
 ## Where we are, in one paragraph
 
-Audio and **both MIDI directions work** with this tree's `snd-usb-ozzy` on Linux Mint. On a
-device that has been through a **real power cycle** (external supply *and* USB unplugged — see
-the trap below), measured 2026-11-10: 20 minutes of continuous streaming with zero
-`MIDI output error`, 12 engine start/stop cycles with zero, a note out and back through the
-rawmidi port with zero, a module reload with zero, and the full `usbfs` probe (9/42/512-byte
-writes, `CLEAR_HALT`, alt combinations) with zero afterwards. Under `usbmon` the transfers are
-the right shape and complete cleanly: 4170/4170 on `0x04` and 227/227 on `0x83`, all
-`USBD_STATUS_SUCCESS`, the note completing 30 µs after submission.
+**The bench is a Raspberry Pi 3B now, not the Mint box.** First boot observed, module built on
+the Pi (aarch64, kernel `6.18.50+rpt-rpi-v8`), US-600 on `card 0`, both MIDI directions healthy,
+and `tr8-remap.service` **active since boot** with the ALSA sequencer port subscribed. The
+transport matrix passes 14/14 twice in a row (`scripts/pi-bench.sh -c`): four rates of playback,
+six-channel capture at three rates, and playback+capture at once, with **0** `MIDI output
+error`, 0 engine errors, 0 late completions (out: 18 isochronous short transfers in ~22 800,
+longest gap 5.6 ms; in: none, longest gap 1.9 ms).
 
-The `-EPROTO` failure this project was built around is **a state of the device, not a driver
-bug**: it was seen twice, both times on a unit that had *never been really power-cycled* (the
-earlier session's "replug" was USB-only with the external supply still connected, which does not
-reset the firmware). No sequence we can execute deliberately — module reload, port reset, the
-full probe including the 512-byte writes, engine start/stop, rawmidi open/close — reproduces it
-once the device is properly power-cycled.
+Getting there cost one finding, and it is **not** the device and **not** the driver: the 3B's
+only USB controller is `dwc_otg`, and its FIQ state machine stops completing **non-periodic**
+transfers (bulk `0x04` MIDI out, `0x83` MIDI in, `0x86` PCM in) while the isochronous side keeps
+submitting. The visible symptom is `aplay`/`arecord` failing with `EIO` at whatever rate comes
+next, engine counters frozen, nothing in the driver log — and, once, a 30 s storm of 29 654
+`[ploytec] isoc: MIDI output error 0xffffffb9` that ended in `restart failed, resetting the
+device`. The trace is `WARN::dwc_otg_hcd_urb_dequeue:639: Timed out waiting for FSM NP transfer
+to complete`. `dwc_otg.fiq_fsm_enable=0` in `/boot/firmware/cmdline.txt` (plus a reboot) removes
+it; `install.sh` now writes it, and also `/etc/modules-load.d/us600-ozzy.conf` (without that the
+enabled service starts before its port exists and loops every 5 s).
+
+So: the 2026-11-10 conclusions about the Mint bench still stand (audio, both MIDI directions, the
+`-EPROTO` state is a state of the device), and the Pi adds a host-side failure mode that has
+nothing to do with either.
 
 ## The one open question
 
-> What puts the device into the `-EPROTO` state, and can a driver avoid it?
+> What puts the device into the `-EPROTO` state on a host that does not lose its FSM, and can a
+> driver avoid it?
 
-It matters because a user who ends up in that state sees both MIDI directions dead until they
-power-cycle the hardware. Two observations to start from:
+On the Pi the storm is explained (above). On Mint it was not reproducible once the device had a
+real power cycle, and nothing we can do deliberately — module reload, port reset, the full
+`usbfs` probe, engine start/stop, rawmidi open/close — brings it back. Two things to remember:
 
 - `scripts/midi-health.sh` is the one-number test: it opens playback (the driver submits no MIDI
   URB at all without a running PCM substream, so "0 errors" at rest proves nothing), counts
   `[ploytec] isoc: MIDI output error` for 2 s, and prints `healthy` / `unhealthy`.
-- The recovery that is known to work is a real power cycle. A module reload and a USB-only
-  unplug do **not** necessarily clear it. `scripts/midi-probe.py -R pulse` cleared it once, from
-  a state created by the probe itself; don't count on it.
+- On a `dwc_otg` host, "unhealthy" now means the FIQ FSM first (§above). Check
+  `dmesg | grep 'FSM NP transfer'` before blaming the device.
 
 ## Next steps, in order
 
-1. **Raspberry Pi 3B (plan phase 4)**, now the next thing — and **the card is ready**: Raspberry
-   Pi OS Lite 64-bit Trixie (2026-10-06) written and configured with cloud-init, the two trees
-   and an `install.sh` on it, waiting for a first boot that has not been observed yet. The whole
-   recipe, the hashes, what is on the card and what to check on the Pi in order: **`docs/pi.md`**.
-   The carry-overs from this bench are already patched on the other side, in `~/src/tr8-remap`
-   (now a git repository, initial commit `4e080c6`): `remap.py` waits up to 30 s for its MIDI
-   port instead of exiting (which made systemd restart-loop), a `systemd-sleep/tr8-remap` hook
-   restarts the service after a resume, and the unit carries both `ExecStart` variants with the
-   **US-600** one active. The risk left is the 6-channel capture not being paced to real time
-   here: xruns are the thing to look for first.
-2. **The instrument mapping (notes 36-51)** in `~/src/tr8-remap`, on the bench:  `pip install
-   --user mido python-rtmidi`, then `--in US-600 --out US-600` (the same port is both, so the
-   substring matches are not ambiguous — each is looked up in its own list).
+1. **The one-hour soak (plan phase 4, item 5)** — the only thing left of Phase 4. Chain plugged
+   in (TR-8 into the US-600's MIDI in, SP-404MK2 out), `tr8-remap.service` already running from
+   boot; play for an hour, then check `systemctl status tr8-remap`,
+   `~/us600-linux/scripts/pi-bench.sh -c`, `/proc/asound/card*/pcm*/sub*/status` and
+   `journalctl -k` for xruns. The service re-subscribes after a resume thanks to the
+   `systemd-sleep` hook, and waits up to 30 s for its MIDI port at boot.
+2. **The instrument mapping (notes 36-51)** in `~/src/tr8-remap` on the Pi: the unit already
+   runs `--in US-600 --out US-600`; what is left is the note mapping itself, not the plumbing.
 3. **Upstream (plan phase 5)** — the US-600 row can arguably leave `EXPERIMENTAL`: the captures
    and the measurements say the device is not the problem. Report with the init table and the
-   framing, and say plainly that the `-EPROTO` state is a device state we could not reproduce.
+   framing, say plainly that the `-EPROTO` state is a device state we could not reproduce, and
+   keep the Pi's `dwc_otg` story out of it (host workaround, not a driver matter).
 
-## Bench state (as of the end of 2026-11-10)
+## Bench state (as of the end of 2026-11-11)
 
-- Host: Linux Mint 22.2, kernel `6.14.0-37-generic`, `sudo` needs a password (no NOPASSWD).
-- Device: `0644:8035` on bus 2 (device number changes per plug; was 024 at 2:24), card 1 `US600`
-  (`pcm0p`, `pcm0c`, `midi0`, ten controls + `Ozzy Info` / `Ozzy Stats`), firmware v1.0.0,
-  chip ID 0x32. **It has an external power supply** and still declares itself bus-powered
-  (`bmAttributes 0x80`, `bMaxPower` 240 mA in the descriptor, 480 mA in sysfs) — relevant for
-  the Pi's power budget and for every "reset" in this document.
+- **Pi 3B**: `pi@192.168.0.142` (host `us600`), Raspberry Pi OS Lite 64-bit Trixie, kernel
+  `6.18.50+rpt-rpi-v8`, card `0 [US600]`, ALSA client `16` this boot (not guaranteed), WiFi
+  only (mDNS does not resolve on this network — use the IP, alias in `~/.ssh/config`). `sudo`
+  is **passwordless** for `pi` (`/etc/sudoers.d/010_pi-nopasswd`, the stock Raspberry Pi OS
+  file cloud-init had not written). `cmdline.txt` carries `dwc_otg.fiq_fsm_enable=0`.
+  `/home/pi/us600-linux` and `/home/pi/tr8-remap` are tarball extracts of the commits
+  `32cb1fc`+`86ecc6a` and `41009b2`; `scripts/pi-bench.sh` was copied by hand and lives only
+  there until the next card is built, so **re-copy it after editing the repo**.
+- **Mint box** (the old bench): Linux Mint 22.2, kernel `6.14.0-37-generic`, the US-600 unplugged
+  since 2026-11-11. Its card numbering was 1; on the Pi it is 0. Anything measured on one host
+  should be re-measured before it is asserted for the other: the capture pacing already differs.
+- **Device**: `0644:8035`, firmware v1.0.0, chip ID 0x32, external supply, declares itself
+  bus-powered (`bmAttributes 0x80`, 240 mA in the descriptor, 480 mA in sysfs). Driver build
+  `8ac988b`.
 - Branch `us600-midi` (ahead of `upstream/main`, `e0345d9`). The Windows captures are in
   `~/src/us600-captures/` (587 MB, **not** committed); the TASCAM package (proprietary) in
   `~/src/us600-driver-files/`; the reverse-engineering notes in `.claude/re/tascam_us600.md`.
-- SD card for the Pi: written 2026-11-10 (see `docs/pi.md`), 59.5 GB, `bootfs` holds
-  `user-data` / `network-config` (placeholders `__PI_PASSWORD_HASH__` and `__WIFI_PSK__` to be
-  filled from the dev machine) and `us600-setup/` (both trees + `install.sh`). The card's
-  configuration is reproducible: `scripts/pi-card-setup.sh` plus the templates in
-  `scripts/pi-card/`.
+- The Pi's card is written and reproducible: `scripts/pi-card-setup.sh` plus the templates in
+  `scripts/pi-card/`. The two secrets are injected by hand after the last run of that script
+  (it resets the placeholders).
+- Host names: the bench machine is `onzep`, the Pi is `us600`.
 
 ## Tools (all in `scripts/`)
 
 | script | needs root | what it does |
 |---|---|---|
-| `midi-health.sh` | no | **start here.** Opens playback, counts `MIDI output error` for 2 s: `0` = healthy, ~2000 = the bad state |
+| `midi-health.sh` | no | **start here.** Opens playback, counts `MIDI output error` for 2 s: `0` = healthy, ~1000/s = bad |
+| `pi-bench.sh` | no (`-r` needs it) | **the Pi's matrix**: rates, capture, concurrency; per step: status, duration, `-EPROTO` delta, decoded `Ozzy Stats`. `-c` concurrency, `-r` reload, `-t`/`-q` capture transfer/queue, `-j` JSON |
 | `probe.sh` | no | descriptors, ALSA cards, recent `dmesg` |
 | `build-load.sh` | yes | build, install, `modprobe`, print state |
 | `midi-loop-test.sh` | no | notes out, report `Tx`/`Rx` deltas and error count |
@@ -85,10 +97,14 @@ power-cycle the hardware. Two observations to start from:
 | `midi-probe.py` | yes | module unloaded, `libusb_reset_device`, talks to `0x04`/`0x83` directly; `-l SECS` listens, `-t` replays candidate inits, `-R {both,pulse,rate81}` applies the us122l handshake only, `-N` skips the port reset |
 | `pi-card-setup.sh` | no | fills `user-data` / `network-config` on a mounted Pi `bootfs`, builds the two `git archive` tarballs, drops `us600-setup/`; see `docs/pi.md` |
 
+`/etc/modules-load.d/us600-ozzy.conf` and the `cmdline.txt` line are written by
+`scripts/pi-card/install.sh`, not by hand.
+
 ## Facts already established (do not re-derive)
 
 - Endpoint map: `0x02` isoc OUT (156 B, int 1), `0x04` bulk OUT (MIDI), `0x83` bulk IN (MIDI),
   `0x81` isoc IN (feedback, 64 B), `0x86` bulk IN (PCM); alt 1 mandatory, alt 0 has no endpoint.
+  Same on the Pi's `dwc_otg` as on Mint's xHCI.
 - **MIDI framing, measured on Windows and matched on Linux**: 9-byte transfers, buffer 512, one
   message per URB out, `0xFD` padding, **`0xE0` last out**, **`0x00` last in**; messages straddle
   IN frames freely. The device answers an empty IN read with 9 bytes of `0xFD…0x00` while its
@@ -103,9 +119,15 @@ power-cycle the hardware. Two observations to start from:
   power-on, which is the `96000 -> 48000` line in `dmesg`, not a leftover.
 - Ozzy's `'A'` block absence is **not** the problem: `midi-probe.py -t` replayed the whole
   official sequence, `'A'` included, and the FIFO behaviour did not change.
+- `Ozzy Stats` (ALSA bytes control `iface=CARD,name='Ozzy Stats'`, `engine/shared/ozzy_stats.h`)
+  is the only place the engine counts: otherwise a stalled pipe looks like silence. The knobs
+  `PCM Capture Transfer` / `PCM Capture Queue` are plain ALSA enum controls — `amixer -c 0 sset`
+  is enough, `ozzy-cli` is not needed on the Pi.
 
 ## Traps this bench paid for (do not rediscover them)
 
+- **`dwc_otg`'s FIQ FSM** (Pi 3B): see the top. `EIO` on every rate is the controller, not the
+  driver, and the driver logs nothing — the evidence is `dmesg | grep 'FSM NP transfer'`.
 - **A USB-only replug is not a reset**: the external supply keeps the firmware alive. Full power
   cycle = external supply **and** USB, ~10 s. Every "I replugged it" in the earlier notes is
   suspect for this reason.
@@ -113,12 +135,20 @@ power-cycle the hardware. Two observations to start from:
   at all when the engine is suspended. `midi-health.sh` opens playback for exactly that reason.
 - **`dmesg` lies about the error rate.** `MIDI output error` at 1000/s fills the ring buffer in
   ~5 s: `grep -c` plateaus, `tail` shows old lines, and the history of what happened just
-  before is *gone*. Use `dmesg -W` (new lines only) and timestamps.
-- `Tx bytes` in `/proc/asound/card1/midi0` counts what ALSA accepted, not what left the host.
+  before is *gone*. Use `journalctl -k` (it keeps 29 654 lines a ring buffer throws away),
+  `dmesg -W` for new lines, and timestamps.
+- **`install.sh` stopping half-way** leaves the unit installed but `disabled` and no sleep hook:
+  the first Trixie boot has no `/usr/lib/systemd/system-sleep/`, so `install` fails there and
+  `set -eu` ends the script. If the module works but the service is `disabled`, this is why.
+- **`sudo` needs a password out of the box** on this card (cloud-init did not write the stock
+  `010_pi-nopasswd`): every remote `ssh -t … sudo` prompt is one more thing to get wrong in a
+  quoted `sh -c` (it cost one wasted round trip). Fixed.
+- `Tx bytes` in `/proc/asound/card*/midi0` counts what ALSA accepted, not what left the host.
 - **512-byte writes to `0x04` wedge the pipe for a few seconds** (the FIFO is small). Use 9-byte
   writes; `midi-probe.py` is a diagnostic, not something to leave running.
-- **The PCM capture is not paced to real time**: `arecord -d 2` returns in ~0.14 s after writing
-  the correct 1.73 MB. Harmless for MIDI work, worth owning before the Pi/xrun tests.
+- **Capture pacing differs by host**: on Mint `arecord -d 2 … -c 6` returns in ~0.14 s after
+  writing the correct 1.73 MB; on the Pi the same command takes 2.0 s. Do not carry one host's
+  timing conclusions to the other.
 - USBPcap artefacts, if the captures are re-read: pending URBs show junk in `USBD_STATUS`
   (`0x00540055`, `0x00470045`), `0xC0010000` is `USBD_STATUS_CANCELED`, and `usb.idVendor` is
   only set on the descriptor packets — filter by `usb.device_address` once you know it. `usbmon`
@@ -130,3 +160,5 @@ power-cycle the hardware. Two observations to start from:
 - One commit per thing, on `us600-midi`; `upstream` is read-only.
 - Measurements → `docs/us600-findings.md` (dated sections); protocol facts →
   `.claude/re/tascam_us600.md`; plan/state → `docs/plan.md`.
+- After changing anything in `scripts/`, re-copy the file to the Pi: its tree is a tarball
+  extract, not a checkout.

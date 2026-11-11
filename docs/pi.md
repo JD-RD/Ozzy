@@ -1,9 +1,7 @@
 # Raspberry Pi 3B — the card, the first boot, the install
 
-Everything below was executed on 2026-11-10 for the bench that runs TR-8 → US-600 →
-SP-404MK2. The image was written, the card configured, but **the first boot itself has not
-been observed yet** (no Pi was available): treat the last two sections as the plan to follow,
-not as measurements.
+Everything below was executed for the bench that runs TR-8 → US-600 → SP-404MK2: the image on
+2026-11-10, the first boot on **2026-11-11**. Sections 3 to 5 are now measurements.
 
 ## 1. The image
 
@@ -84,19 +82,35 @@ What it writes, and why:
 that fills them with `openssl passwd -6 -stdin` (no argument visible in `ps`) and `getpass` (no
 shell history), then re-validates the YAML.
 
-## 3. First boot (to be observed)
+## 3. First boot (observed 2026-11-11)
 
-Expected: 2 to 5 minutes of resize + cloud-init. Then, from the dev machine:
+It takes 2 to 5 minutes of resize + cloud-init. Then, from the dev machine:
 
 ```bash
-ssh pi@us600.local        # avahi is installed; otherwise the router's DHCP list
+ssh pi@192.168.0.142      # mDNS does not resolve on this WiFi, see the traps
 sudo sh /boot/firmware/us600-setup/install.sh
 ```
 
+What the boot did, measured: cloud-init `done` (its only complaint is a `cc_netplan_nm_patch`
+module this cloud-init version does not have — no effect), `linux-headers-6.18.50+rpt-rpi-v8`
+already present and matching `uname -r`, both trees extracted to `/home/pi`, `us600-setup/`
+readable. The device was not plugged in, so `/proc/asound/cards` only showed the onboard two.
+
+**`install.sh` stopped half-way** on the first run: `/usr/lib/systemd/system-sleep/` does not
+exist on this image, so `install -m 755 … /usr/lib/systemd/system-sleep/tr8-remap` failed and
+`set -eu` ended the script *before* `systemctl enable`. The unit was installed, the module was
+built and loaded, the sleep hook and the enable were not. Fixed in `scripts/pi-card/install.sh`
+(`install -d` first); if you meet a unit that is installed but `disabled`, that is the trace.
+
 `install.sh` is idempotent: it extracts the trees if cloud-init did not, installs the packages,
-builds the module with `scripts/build-load.sh` (which wants `linux-headers-$(uname -r)`),
-installs `tr8-remap.service` and the `systemd-sleep` hook, enables the service, then prints the
-cards, the playback devices, and the ALSA sequencer ports.
+writes `/etc/modules-load.d/us600-ozzy.conf`, builds the module with `scripts/build-load.sh`
+(which wants `linux-headers-$(uname -r)`), adds `dwc_otg.fiq_fsm_enable=0` to `cmdline.txt` on
+a `dwc_otg` host (the 3B), installs `tr8-remap.service` and the `systemd-sleep` hook, enables
+the service, then prints the cards, the playback devices, and the ALSA sequencer ports.
+
+**Then reboot once**: the `cmdline.txt` change is read at boot, and until it is, the bulk pipes
+wedge on the first stream that needs them (see §5). After the reboot the module is already
+loaded, the card is up, and `tr8-remap.service` is `active` on its own.
 
 If cloud-init did something unexpected: `/var/log/cloud-init-output.log`, and the file that
 drove it is still on the card (`bootfs/user-data`).
@@ -105,29 +119,51 @@ drove it is still on the card (`bootfs/user-data`).
 
 ```bash
 uname -r                                  # headers must exist for exactly this
-cat /proc/asound/cards                    # US600 should be card 1 (onboard audio is card 0)
+cat /proc/asound/cards                    # US600 is card 0 (module loads before the onboard cards)
 ~/us600-linux/scripts/midi-health.sh      # 0 / healthy
+~/us600-linux/scripts/pi-bench.sh -c      # the whole transport matrix, ~45 s, table + counters
 ~/us600-linux/scripts/midi-loop-test.sh -s 30   # with the DIN loopback fitted
-aconnect -l | sed -n '/US-600/,+2p'       # client number: 20 here, not guaranteed
-systemctl start tr8-remap && journalctl -u tr8-remap -f
+aconnect -l | sed -n '/US-600/,+2p'       # client number: 16 after this boot, not guaranteed
+systemctl status tr8-remap               # active, started at boot
 ```
 
+`scripts/pi-bench.sh` is the one to run before and after any change: it walks the rates, opens
+playback and capture in the orders that have broken here, and prints per step the exit status,
+the `MIDI output error` delta and the decoded `Ozzy Stats` (transfers / errors / short / late /
+longest gap, per direction) — so two runs compare, which `dmesg` scrolling does not.
+
 Then the real chain for an hour: TR-8 pads → SP-404MK2, watching
-`/proc/asound/card*/pcm*/sub*/status` and `dmesg` for xruns.
+`/proc/asound/card*/pcm*/sub*/status` and `journalctl -k` for xruns.
 
 ## 5. Traps, from the bench and from this card
 
+- **`dwc_otg`'s FIQ FSM wedges the non-periodic transfers** (the 3B's only USB controller).
+  Symptom: `WARN::dwc_otg_hcd_urb_dequeue:639: Timed out waiting for FSM NP transfer to
+  complete` in `dmesg`, then `aplay`/`arecord` fail with `EIO` (`Erreur d'entrée/sortie`) on
+  any rate, the engine's counters stop moving, and nothing in the driver logs it. On the first
+  boot it also produced a 30 s storm of `[ploytec] isoc: MIDI output error 0xffffffb9`
+  (29 654 lines) that ended with `restart failed, resetting the device`. Cure, measured:
+  `dwc_otg.fiq_fsm_enable=0` in `/boot/firmware/cmdline.txt` (a reboot), after which 14/14
+  bench steps pass twice in a row, `0` `-EPROTO`, `0` FSM warnings. `install.sh` now adds it.
+- **The module is not loaded at boot** unless `/etc/modules-load.d/us600-ozzy.conf` exists:
+  `tr8-remap.service` is `enabled`, starts with the system, waits 30 s for its MIDI port, exits,
+  and `Restart=always` loops every 5 s. `install.sh` now writes that file.
+- **mDNS does not work in either direction on this WiFi** (5353 filtered or AP isolation):
+  `us600.local` times out from the dev machine, and the Pi has no `avahi-utils` to ask back.
+  Use the IP and an `~/.ssh/config` alias, and reserve a DHCP lease for `b8:27:eb:e2:84:6f`.
 - **The 3B's WiFi is 2.4 GHz only.** If the SSID is 5 GHz-only, use Ethernet.
 - **Power**: the 3B shares about 1.2 A across its ports. The US-600 declares itself bus-powered
   (`bAttributes 0x80`, 240 mA in the descriptor, 480 mA in sysfs) but has an external supply;
-  if it drops off the bus, use a powered hub and check `dmesg` for over-current first.
+  if it drops off the bus, use a powered hub and check `dmesg` for over-current first. Not
+  needed with the fix above: it has run 22 000 transfers and a concurrent playback+capture
+  without a reset.
 - **A USB unplug is not a reset** on this device: the external supply keeps the firmware alive.
   The known cure for the `-EPROTO` state is external supply **and** USB off for ~10 s.
 - **The ALSA sequencer subscription does not survive a suspend**; the sleep hook installed by
   `install.sh` restarts the service, which is what re-subscribes.
-- **The 6-channel capture is not paced to real time** on the Mint bench (2 s of audio in
-  0.14 s) and one 96 kHz capture returned `EIO` in a back-to-back rate sweep. If the Pi shows
-  xruns, that is where to look, with `ozzy-cli set pcm-capture-transfer` /
-  `pcm-capture-queue` as the knobs.
+- **The 6-channel capture is paced on the Pi** (`arecord -d 2` takes 2.0 s), unlike the Mint
+  bench, where the same command returned in ~0.14 s. If the Pi shows xruns, the knobs are
+  `PCM Capture Transfer` / `PCM Capture Queue` (ALSA controls; `amixer -c 0 sset` works, no
+  `ozzy-cli` needed) — `pi-bench.sh -t 8 -q 2` measures a pair.
 - Re-running `scripts/pi-card-setup.sh` on an already-injected card **resets the two
   placeholders** — inject after the last run, or mount the card and redo it.
