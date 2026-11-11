@@ -69,6 +69,11 @@ install -m 644 "$HOME_PI/tr8-remap/tr8-remap.service" /etc/systemd/system/tr8-re
 # `systemctl enable` (constaté au premier passage sur le 3B, 2026-11-11).
 install -d /usr/lib/systemd/system-sleep
 install -m 755 "$HOME_PI/tr8-remap/systemd-sleep/tr8-remap" /usr/lib/systemd/system-sleep/tr8-remap
+# Rebranchement USB : l'abonnement ALSA sequencer de remap.py ne survit pas à une
+# réénumération (processus vivant, sourd et muet, rien dans le journal).
+install -m 644 "$HOME_PI/us600-linux/scripts/pi/70-us600-remap.rules" \
+	/etc/udev/rules.d/70-us600-remap.rules
+udevadm control --reload
 systemctl daemon-reload
 systemctl enable tr8-remap.service
 

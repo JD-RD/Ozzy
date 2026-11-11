@@ -1,0 +1,5 @@
+# Le US-600 vient d'être branché (ou rebranché) : redémarrer le remap.
+# L'abonnement ALSA sequencer de remap.py ne survit ni à une reprise ni à une
+# réénumération USB : le processus reste vivant mais sourd et muet, sans une ligne
+# dans le journal (constaté le 2026-11-11, après un cycle d'alimentation).
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0644", ATTR{idProduct}=="8035", RUN+="/bin/systemctl --no-block restart tr8-remap.service"

@@ -658,3 +658,43 @@ costs nothing.
 - `install.sh` now writes `/etc/modules-load.d/us600-ozzy.conf` (without it the enabled service
   starts before its port exists and `Restart=always` loops every 5 s) and appends
   `dwc_otg.fiq_fsm_enable=0` on a `dwc_otg` host.
+
+### 2026-11-11, 15:30-16:08 — the wedge, seen live for the first time, and a channel bug
+
+The real chain was put under load on the Pi: TR-8 (pad 5 looping, so MIDI clock 24 ppqn +
+`note 50`/`note 51` + active sensing) into the US-600, `tr8-remap.service` bridging to the
+SP-404MK2. `scripts/soak.sh`-style sampling every minute (`rx`/`tx` of the rawmidi port, the
+`-EPROTO` count, the FSM warning count, the decoded `Ozzy Stats`).
+
+| time | `rx`/`tx` | `proto` | engine `in` | verdict |
+|---|---|---|---|---|
+| 15:35:52 – 15:42:55 | +4 800 B/min, 0 overrun | 0 | 580 817, 0 err | healthy |
+| **15:43:57** | frozen at 52 279 / 45 623 | **14 206** | **969 362, 388 545 err**, late 1, gap **494 s** | **wedged** |
+| 15:45 – 16:05 | frozen | +1 000/min | 35 M, 34 M err | wedged, 22 min |
+| 16:06:40 (after a real power cycle) | 0 / 0 then growing | (journald dropped lines) | 18 387, **0 err**, gap 4 024 µs | healthy |
+
+`usbmon` during the wedge, 6 s: `Bi:3` 87 468 completions, `Bi:6` 88 561, `Bo:4` 3 450, **all
+status `-71` (`-EPROTO`) with length 0**, while `Zo:2`/`Zi:1` (isochronous) kept status `0`.
+`dwc_otg` FSM warnings: **0** — so this is *not* the host controller of the previous section,
+it is the device state of 2026-11-10, and this is the first time the project saw it arrive on
+its own: **after ~8 minutes of steady MIDI-in traffic**, on a device that had been through a
+real power cycle. It clears with the same cure (external supply **and** USB off, 10 s) and
+nothing else.
+
+Two things that were *not* the cause, worth writing down because both cost time:
+
+- The notes did leave the host throughout the healthy window, and they left on **MIDI channel
+  2**: `remap.py --channel 1` handed `1` to mido, which counts from 0, so the wire saw `0x91`
+  (`912a44` = note 42, `912c50` = note 44). The SP-404MK2 on channel 1 ignored all of them,
+  which is why "the Pi sends but nothing sounds" was true *before* the wedge as well. Fixed in
+  `tr8-remap` (`e756a1b`): the channel is 1-16 everywhere and converted once. On the wire after
+  the fix: `902c50` — channel 1.
+- `Rx bytes` frozen is the *symptom* of the wedge, not a sign the TR-8 stopped: `Bi:3` was still
+  being submitted 8 000 times a minute, each completing with `-EPROTO` and 0 bytes.
+
+Also measured: the ALSA sequencer subscription does **not** survive a USB replug (the process
+keeps running, `aconnect` shows `16:0` and both `RtMidi` clients with no link, and nothing is
+logged). A `udev` rule now restarts the service on the device's `add` event
+(`scripts/pi/70-us600-remap.rules`), which was verified by triggering the event by hand.
+Your `journalctl -k | grep -c 'MIDI output error'` **understates a storm**: journald rate-limits
+duplicates, so the count wanders (33 946 → 33 579) while the `Ozzy Stats` counters only grow.
