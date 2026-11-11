@@ -57,6 +57,49 @@ Starting points for a deeper trace: `PGDevice::configurationDone` (string 0xf107
 the `USB: Hide MIDI Interface` one (0xf1078b70). `.pdata` gives the function bounds for any
 address (`scripts`/notes: parse 12-byte RUNTIME_FUNCTION entries at file offset 0x7a200).
 
+## What the official Windows driver does on the wire (USBPcap, 2026-11-10)
+
+Measured, not inferred: `~/src/us600-captures/*.pcapng` (Windows 11, driver 1.03rc1 x64,
+USBPcap1). Measurements and the transfer table are in `docs/us600-findings.md`.
+
+Per configuration, in this order, all inside ~85 ms after `SET_CONFIGURATION 1`:
+
+| # | request | bmRequestType / bRequest | wValue | wIndex | data |
+|---|---|---|---|---|---|
+| 1 | `'V'` read 15 | c0 / 0x56 | 0 | 0 | returns `31 2e 30 30 …` ("1.00") |
+| 2 | `'I'` read 1 | c0 / 0x49 | 0 | 0 | returns **0x12** |
+| 3 | UAC GET_CUR, ep 0 | a2 / 0x81 | 0x0100 | 0 | returns `44 ac 00` = 44100 |
+| 4 | UAC SET_CUR rate | 22 / 0x01 | 0x0100 | **0x86** | `80 bb 00` = 48000 |
+| 5 | UAC SET_CUR rate | 22 / 0x01 | 0x0100 | **0x02** | `80 bb 00` |
+| 6 | `'A'` read 5 | c0 / 0x41 | **0x0d00** | **0x0101** | returns `04 92 00 02 00` |
+| 7 | `'A'` write | 40 / 0x41 | **0x0d04** | 0x0101 | — |
+| 8 | `'A'` write | 40 / 0x41 | **0x0e00** | 0x0101 | — |
+| 9 | `'A'` write | 40 / 0x41 | **0x0f00** | 0x0101 | — |
+| 10 | `'A'` write | 40 / 0x41 | **0x1002** | 0x0101 | `0x1000` in two other captures |
+| 11 | `'A'` write | 40 / 0x41 | **0x110b** | 0x0101 | — |
+| 12 | UAC SET_CUR again | 22 / 0x01 | 0x0100 | 0x86 ×3, 0x02 ×2 | `80 bb 00` |
+| 13 | UAC GET_CUR ep 0x86 | a2 / 0x81 | 0x0100 | 0x86 | returns `80 bb 00` |
+| 14 | `'I'` read 1 → `'I'` write | c0 + 40 / 0x49 | **0x0032** | 0 | 0x12 → 0x32 |
+
+- **`SET_INTERFACE` is never sent separately** (0 occurrences in 4 captures). The alternate
+  setting rides inside the single `URB_FUNCTION_SELECT_CONFIGURATION` (`SET_CONFIGURATION 1`),
+  which USBPcap decodes only as the standard request. `wIndex` in the class requests is an
+  *endpoint address*, not an interface number; `wValue 0x0100` = UAC
+  `SAMPLING_FREQ_CONTROL`.
+- `'A'` with `wValue = (register << 8) | value` is the block Ozzy does not have at all;
+  0x0d/0x0e/0x0f/0x10/0x11 are set in that order and 0x0d is read back first (5 bytes).
+- The `'I'` write (`0x32`) is **last**, not first.
+
+MIDI framing, both directions:
+
+- **9-byte transfers, buffer 512.** OUT: one MIDI message, `0xFD` padding, **`0xE0` last**.
+  IN: bytes, `0xFD` padding, **`0x00` last**. Messages straddle IN frames freely.
+- OUT pacing is on demand, one URB per message; with Ableton as clock master the interval is
+  20.8 ms (48/s). At idle Windows sends **zero** MIDI URBs, in both directions.
+- IN: 5 URBs submitted when the port opens, then one resubmission per completion; no tight
+  loop while they are pending.
+- No `'M'`/`'B'` payloads at init — confirmed on the wire.
+
 ## Mainline's us122l (US-122L 0644:800e, US-144 0644:800f) — the working reference
 
 Same family, same endpoints, GPL-2.0 so facts only:
@@ -71,9 +114,11 @@ Same family, same endpoints, GPL-2.0 so facts only:
 
 ## Open
 
-- What starts the US-600's MIDI transmitter (the FIFO that never drains). Candidates: the `'I'`
-  index-1 (mixer/chassis config) register that Ozzy never reads, a mixer-mode write, or the
-  rate/stream state. `scripts/midi-probe.py -t` measures the FIFO drain after each candidate.
+- What starts the US-600's MIDI transmitter. The capture narrowed it to "the MIDI pipes are fine
+  under the official driver, so the difference is in the init": the `'A'` block (absent from
+  Ozzy) and the position of the `'I'` write. Test order and the full list are in
+  `docs/us600-findings.md`, session 2026-11-10 (phase 2c); `scripts/midi-probe.py -t` now runs
+  them.
 - The device is **not** faulty: its MIDI works with this unit on Windows and macOS (owner,
   2026-11-10). So the answer is in the official driver's traffic; TASCAM's Windows package is
   now at hand (`~/src/us600-driver-files/`, see above) and the next step is to capture it with
