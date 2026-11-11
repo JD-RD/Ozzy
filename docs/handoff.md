@@ -58,14 +58,18 @@ never had a real power cycle. Two things to remember:
 
 ## Next steps, in order
 
-1. **The one-hour soak (plan phase 4, item 5)** — the only thing left of Phase 4. Chain plugged
+1. **The one-hour soak (plan phase 4, item 5) — running since 2026-11-11 17:24**, on the real
+   chain (TR-8 pads 1-11 -> US-600 -> SP-404MK2 pads 1-11), with `~/soak.sh` sampling every
+   minute into `/home/pi/soak-<date>.log` — the only thing left of Phase 4. Chain plugged
    in (TR-8 into the US-600's MIDI in, SP-404MK2 out), `tr8-remap.service` already running from
    boot; play for an hour, then check `systemctl status tr8-remap`,
    `~/us600-linux/scripts/pi-bench.sh -c`, `/proc/asound/card*/pcm*/sub*/status` and
    `journalctl -k` for xruns. The service re-subscribes after a resume thanks to the
    `systemd-sleep` hook, and waits up to 30 s for its MIDI port at boot.
-2. **The instrument mapping (notes 36-51)** in `~/src/tr8-remap` on the Pi: the unit already
-   runs `--in US-600 --out US-600`; what is left is the note mapping itself, not the plumbing.
+2. ~~The instrument mapping~~ Done, measured, not guessed: `--in-channel 10 --channel 10
+   --base-note 44` (the TR-8 double-sends on channel 1, the MK2 listens on 10, its bank C
+   starts at 44). Commits `e756a1b`, `d8ecabe`, `a5eb975` in `~/src/tr8-remap`. If the bank
+   changes on the MK2, `--base-note` follows (36 A, 40 B, 44 C).
 3. **Upstream (plan phase 5)** — the US-600 row can arguably leave `EXPERIMENTAL`: the captures
    and the measurements say the device is not the problem. Report with the init table and the
    framing, say plainly that the `-EPROTO` state is a device state we could not reproduce, and

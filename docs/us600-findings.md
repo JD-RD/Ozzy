@@ -698,3 +698,29 @@ logged). A `udev` rule now restarts the service on the device's `add` event
 (`scripts/pi/70-us600-remap.rules`), which was verified by triggering the event by hand.
 Your `journalctl -k | grep -c 'MIDI output error'` **understates a storm**: journald rate-limits
 duplicates, so the count wanders (33 946 → 33 579) while the `Ozzy Stats` counters only grow.
+
+### 2026-11-11, 17:20 — the chain closes: TR-8 pads 1-11 -> SP-404MK2 pads 1-11
+
+Everything between the driver and the SP was wrong in `tr8-remap`, and the driver was right all
+along. Three bugs, each found by measurement, none by reading the code:
+
+- **The notes left on MIDI channel 2.** `--channel 1` was handed to mido, which counts from 0,
+  so the wire carried `0x91`. The MK2 listens on its `Pad MIDI Channel`, 10 on this unit:
+  nothing sounded, for hours, while `usbmon` showed perfectly formed notes leaving the host.
+- **The MK2's note->pad table depends on the bank**, and the repo assumed the bank A base of
+  36 (Roland's "not changeable" table). Measured on bank C: `44 -> pad 13`, `48 -> 9`,
+  `52 -> 5`, `56 -> 1`, and notes 36-43 are simply ignored. `--base-note` now carries it.
+- **The TR-8 sends every hit twice**: the instrument's note on channel 10 *and* a second note on
+  channel 1 (`pad 5 -> 50 on 10 + 51 vel 68 on 1`, `pad 3 -> 43 on 10 + 49 vel 7 on 1`). The
+  remap accepted every channel, so one hit played two pads. `--in-channel 10` filters it;
+  clock and start/stop still pass.
+
+After that, `usbmon` on `0x04` shows exactly two notes per loop cycle (`9934 50` = 52 for the
+high tom, `993a 50` = 58 for the low tom) and the bench hears TR pads 1-11 on SP pads 1-11,
+with no parasitic notes. The service runs `--in-channel 10 --channel 10 --base-note 44`; the
+`tr8-remap` README carries the bank table.
+
+What this says about the driver: PCM out/in, MIDI in *and* MIDI out, the handshake at every
+rate and the MIDI framing all work on the Pi; the US-600's DIN OUT carries host MIDI (the
+loopback test returns 24 notes byte for byte) and drives the MK2. The one thing left to
+measure is time: the `-EPROTO` wedge of the previous section.
