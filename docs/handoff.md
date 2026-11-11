@@ -41,9 +41,13 @@ power-cycle the hardware. Two observations to start from:
 
 1. **Raspberry Pi 3B (plan phase 4)**, now the next thing: build on the Pi, powered hub if it
    browns out, `tr8-remap.service` from boot, an hour of the real chain and watch for xruns.
-   Two things to carry over: the ALSA sequencer subscription does not survive a suspend (the
-   service has to re-subscribe or be restarted by a sleep hook), and the 6-channel capture is not
-   paced to real time here, so xruns are the thing to look for first.
+   The two carry-overs are already patched on the other side, in `~/src/tr8-remap` (no git there):
+   `remap.py` now waits up to 30 s for its MIDI port instead of exiting (which made systemd
+   restart-loop and fill the journal), a `systemd-sleep/tr8-remap` hook restarts the service after
+   a resume (the ALSA sequencer subscription does not survive it, and `Restart=always` never sees
+   the silent stop), and the unit carries both `ExecStart` variants with the **US-600** one active.
+   The remaining risk is the 6-channel capture not being paced to real time here: xruns are the
+   thing to look for first.
 2. **The instrument mapping (notes 36-51)** in `~/src/tr8-remap`, on the bench:  `pip install
    --user mido python-rtmidi`, then `--in US-600 --out US-600` (the same port is both, so the
    substring matches are not ambiguous — each is looked up in its own list).
