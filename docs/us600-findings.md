@@ -591,3 +591,70 @@ sudo scripts/midi-probe.py       # ask 0x04 / 0x83 without the driver (sudo, unl
 The last two are the ones that settle the MIDI question: `usbmon-midi.sh` shows the
 completion statuses on the wire, `midi-probe.py` shows whether the endpoints answer at all
 when nothing else drives the device.
+
+## Session 2026-11-11 — the Pi 3B: `dwc_otg`, not the device
+
+**The first boot was observed.** Raspberry Pi OS Lite 64-bit Trixie, kernel
+`6.18.50+rpt-rpi-v8` with headers for exactly that version, cloud-init `done` (one benign
+`cc_netplan_nm_patch` complaint), both trees extracted, module built **on the Pi** for the first
+time (aarch64) and loading. Card is **`0 [US600]`**, not 1: the module loads from
+`/etc/modules-load.d` before the onboard cards, so `hw:0,0` is the US-600 and the ALSA client
+number was 16 this boot. `install.sh` stopped half-way on the first run
+(`/usr/lib/systemd/system-sleep/` missing → `install` failed → `set -eu` ended the script before
+`systemctl enable`); fixed in the script.
+
+The descriptor map, the `96000 -> 48000` handshake and the MIDI side behave exactly as on Mint:
+`midi-health.sh` → `0`, `aconnect` shows `US-600:0`.
+
+### The failure, and what it is not
+
+| step (after a module reload) | before | after `dwc_otg.fiq_fsm_enable=0` |
+|---|---|---|
+| playback 44.1 / 48 kHz | `EIO` (`aplay: pcm_write … Erreur d'entrée/sortie`) | ok, ~1.2 s |
+| playback 88.2 / 96 kHz | ok | ok |
+| capture 6 ch, all four rates | `EIO`, counters frozen | ok, 2.0 s each |
+| playback + capture at once | `EIO` | ok, 5.2 s |
+| `-EPROTO` lines | up to 29 654 in 30 s | **0** |
+| `Ozzy Stats` `in` errors/late | 0 / 0 (never moved) | 0 / 0 |
+
+Each failing step left `Ozzy Stats` frozen at its previous value — the stream never moved a
+frame — and the driver logged **nothing**; the only trace was in `dmesg`:
+
+```
+WARN::dwc_otg_hcd_urb_dequeue:639: Timed out waiting for FSM NP transfer to complete on 2
+```
+
+**27 of those, the first at 18 208 s uptime, right at the end of the 29 654-line `-EPROTO`
+storm that started at 18 205 s.** That storm ended with the driver's own
+`restart failed, resetting the device` → `usb_queue_reset_device`, after which every rate worked
+again until the next wedge. So on this host the storm is not the device state of 2026-11-10: it
+is the *consequence* of the controller's FIQ FSM blocking the **non-periodic** transfers (bulk
+`0x04` MIDI out, `0x83` MIDI in, `0x86` PCM in) — the isochronous direction keeps submitting, so
+its MIDI packets fail by the thousand while bulk never completes, and the engine eventually
+gives up and resets.
+
+Order-dependence before the fix, which is why the first runs looked rate-specific: the first
+stream after `modprobe` worked (device already at that rate, no restart), then whichever rate
+forced a handshake wedged the FSM, and from then on *everything* failed until the next reload or
+device reset. 44.1/48 kHz failing and 88.2/96 kHz passing in one pass is an artefact of that
+order, not a rate property.
+
+With `dwc_otg.fiq_fsm_enable=0` (a reboot), `scripts/pi-bench.sh -c` passes **14/14 steps twice
+in a row**, `0` `-EPROTO`, `0` FSM warnings, ~22 000 transfers, and `tr8-remap.service` runs from
+boot on its own. The whole pass is one command and prints the counters, so the next comparison
+costs nothing.
+
+### What else the Pi showed
+
+- **The 6-channel capture is paced here**: `arecord -d 2 … -c 6` takes 2 015–2 020 ms, where the
+  Mint bench returns in ~0.14 s. The Mint figure is a behaviour of that host's timing, not of the
+  device.
+- `[ozzy] isoc: first feedback packet: 0 bytes 60 60 60` appears occasionally (a short/empty
+  feedback packet); the driver falls back to the nominal rate and the stream stays correct —
+  `isoc out: … feedback every 8 microframe(s)` then `more than 40 feedback packets were not 3
+  bytes long, PCM out runs at the nominal rate` once. No step failed because of it.
+- `Ozzy Stats` after the 14-step pass: out 18 short transfers in ~22 800 (isochronous packets
+  that failed), 0 errors, 0 late, longest gap 5 620 µs; in 0/0/0, longest gap 1 909 µs.
+- `install.sh` now writes `/etc/modules-load.d/us600-ozzy.conf` (without it the enabled service
+  starts before its port exists and `Restart=always` loops every 5 s) and appends
+  `dwc_otg.fiq_fsm_enable=0` on a `dwc_otg` host.
