@@ -41,7 +41,26 @@ apt-get install -y "linux-headers-$(uname -r)" || {
 }
 
 say "module snd-usb-ozzy"
+# Chargé au démarrage : sans ça, tr8-remap.service (enabled) démarre sans port MIDI,
+# boucle toutes les 5 s et remplit le journal (constaté au premier boot, 2026-11-11).
+printf 'snd-usb-ozzy\n' > /etc/modules-load.d/us600-ozzy.conf
 "$HOME_PI/us600-linux/scripts/build-load.sh"
+
+say "contrôleur USB du Pi 3B"
+# dwc_otg : son FIQ FSM bloque les transferts non périodiques (bulk : MIDI 0x04/0x83,
+# capture 0x86) -> « Timed out waiting for FSM NP transfer to complete », flux en EIO,
+# et une tempête de -EPROTO. Mesuré le 2026-11-11 sur le 3B ; le paramètre est lu au boot.
+if [ -d /sys/module/dwc_otg ]; then
+	cmdl=/boot/firmware/cmdline.txt
+	if ! grep -q 'dwc_otg.fiq_fsm_enable' "$cmdl"; then
+		cp -a "$cmdl" "$cmdl.before-us600"
+		sed -i '1s/[[:space:]]*$//; 1s/$/ dwc_otg.fiq_fsm_enable=0/' "$cmdl"
+		echo "  ajouté dwc_otg.fiq_fsm_enable=0 à $cmdl (sauvegarde .before-us600)"
+		echo "  -> redémarrer le Pi pour que le réglage prenne effet"
+	else
+		echo "  $cmdl a déjà dwc_otg.fiq_fsm_enable"
+	fi
+fi
 
 say "service tr8-remap"
 install -m 644 "$HOME_PI/tr8-remap/tr8-remap.service" /etc/systemd/system/tr8-remap.service
