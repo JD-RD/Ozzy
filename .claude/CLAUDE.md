@@ -31,8 +31,9 @@ Per-device bring-up (hardware on the bench, what works and what does not) lives 
   steps in order, the bench state, the tools, the traps, and the facts already established
 - `docs/plan.md` — the US-600 plan: Linux Mint first, then Raspberry Pi 3B (audio baseline, MIDI
 diagnosis with usbmon/usbfs, validation, upstream), with the machine state it starts from
-- `docs/us600-findings.md` — the US-600 baseline: descriptors, what works, the failure modes and
-the working hypotheses
+- `docs/us600-findings.md` — the US-600's dated measurements: what works, the `-EPROTO`
+  device state and how it was cornered, the official Windows driver's capture, and the validation
+  runs with a DIN loopback
 
 Work on the `us600-midi` branch; `upstream` is read-only. When a bring-up answers a protocol
 question, move the fact into `.claude/re/` as usual.
