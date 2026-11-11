@@ -191,11 +191,20 @@ before blaming the driver.
 
 ## Phase 3 — Validation on Mint
 
-- `scripts/midi-loop-test.sh -s 30` with a DIN OUT -> IN cable: every byte comes back, the
-  `MIDI output error` counter stays at zero.
-- Real intent: TR-8 MIDI OUT -> US-600 IN, US-600 OUT -> SP-404MK2 IN, notes 36-51, one pad
-  per instrument.
-- Audio regression at the four rates, plus unplug/replug and suspend/resume.
+**Status 2026-11-10: loopback, audio and the real chain done; replug and suspend still open.**
+
+- ~~`scripts/midi-loop-test.sh -s 30` with a DIN OUT -> IN cable: every byte comes back, the
+  `MIDI output error` counter stays at zero.~~ Done: 36 notes, 216/216 bytes back in order, no
+  new error. The script had to be fixed first (it never opened the MIDI IN port, and the driver
+  only reads `0x83` while a client reads).
+- ~~Real intent: TR-8 MIDI OUT -> US-600 IN, US-600 OUT -> SP-404MK2 IN.~~ Done: TR-8 pad 5
+  lights bank A pad 7 on the SP-404MK2. The driver exposes the two ports but does **not** route
+  between them; a client has to (`aconnect 20:0 20:0` for the bench, `tr8-remap` for the real
+  mapping, since the MK2's note->pad table is fixed).
+- ~~Audio regression at the four rates~~ Done, with one transient capture `EIO` at 96 kHz in a
+  back-to-back rate sweep.
+- Still open: unplug/replug (external supply **and** USB), suspend/resume, and the instrument
+  mapping (notes 36-51 -> one pad per instrument), which belongs to `~/src/tr8-remap`.
 
 ## Phase 4 — Raspberry Pi 3B
 

@@ -546,6 +546,24 @@ Still open for phase 3: the TR-8 → SP-404 chain. With the loopback fitted the 
 exactly the bytes we send and nothing else, so the TR-8 was not sending at all (it was off or
 unplugged) — the real chain and the instrument mapping are untested.
 
+Later the same evening, with the loopback replaced by the TR-8 on the DIN IN, `usbmon-midi.sh`
+over 4.2 s: `0x04` 4092/4092 and `0x83` 224/224, `errors 0` on every endpoint. The `0x83`
+frames carry 208 × `f8` (clock, ~50/s) and 16 × `0xFE` (active sensing), i.e. the TR-8 is on the
+input; the one note sent is accepted by the device (status 0) and does **not** come back, which
+is expected once the loopback cable has been replaced by the TR-8.
+
+Then 120 s with the TR-8 played by hand, still nothing on the SP-404, and the capture says why:
+**the driver does not route MIDI in to out.** `0x83` carried 6065 × `f8`, 422 × `0xFE` and the
+notes themselves (`90 35`, `99 25`, `99 27`, `99 33`, `90 47`, `2F 50`, `31 50` … on channels 1
+and 10), while `0x04` carried **119 733 idle frames and only the two notes the test script sent
+itself**. With `aconnect 20:0 20:0` (the ALSA sequencer subscription that makes the port its own
+source, i.e. a thru) the chain works end to end: **TR-8 pad 5 lights bank A pad 7 on the
+SP-404MK2**. The cross-mapping is the MK2's fixed note→pad table, which is what `~/src/tr8-remap`
+is for; it is not a driver matter.
+
+So both directions are proven on the wire and through real gear. What remains for phase 3:
+replug (external supply **and** USB), suspend/resume, and the 36-51 mapping in `tr8-remap`.
+
 ## Reproduce
 
 ```bash
