@@ -13,6 +13,10 @@ interfaces, selects alternate setting 1, and then tries the MIDI endpoints:
   5. after the 'I' writes mainline's us122l makes for the US-122L / US-144:
      0x11 then 0x10, and the rate set with SET_CUR on 0x86
 
+-t replays the official Windows driver's init instead ('I' read, rate 48000 on 0x86 and
+0x02, the 'A' register block, the rate re-sent, 'I' 0x32 last) and counts how many 9-byte
+writes each candidate lets the device take. See docs/us600-findings.md, phase 2c.
+
 Every call prints libusb's return code and the bytes moved, so a STALL (-9), a
 timeout (-7, the device NAKed) and a protocol error (-EPROTO, which libusb
 reports as -99 OTHER) can be told apart.
@@ -21,6 +25,7 @@ Usage: scripts/midi-probe.py [-k] [-n notes]      (needs root for usbfs)
 """
 import argparse
 import ctypes
+import glob
 import os
 import subprocess
 import sys
@@ -33,12 +38,16 @@ EP_PCM_IN, EP_PCM_OUT = 0x86, 0x02
 REQTYPE_IN = 0xC0        # vendor, device, host -> device? no: 0xC0 = in
 REQTYPE_OUT = 0x40
 REQTYPE_CLASS_EP_OUT = 0x22  # class, endpoint, host -> device
+REQTYPE_CLASS_EP_IN = 0xA2   # class, endpoint, device -> host
 REQ_STATUS = 0x49        # 'I'
 REQ_VERSION = 0x56       # 'V'
 REQ_SET_CUR = 0x01
+REQ_GET_CUR = 0x81
 REQ_TABLE = 0x4D         # 'M', 64-byte routing table (VID 0x0644)
 REQ_MIXER = 0x54         # 'T', mixer knob/bitmap
 REQ_REVERB = 0x42        # 'B', 256-byte reverb buffer (VID 0x0644)
+REQ_A = 0x41             # 'A', register access: wValue = (register << 8) | value
+REQ_A_INDEX = 0x0101     # the wIndex the official driver uses for every 'A' request
 
 NAMES = {
 	0: "ok", -1: "IO", -2: "INVALID_PARAM", -3: "ACCESS", -4: "NO_DEVICE",
@@ -52,6 +61,25 @@ def name(rc):
 	if rc >= 0:   # control transfers: bytes moved
 		return "%d ok" % rc
 	return "%d %s" % (rc, NAMES.get(rc, "?"))
+
+
+def device_present():
+	"""Name of the sysfs node for the US-600, or None when it is not on the bus.
+
+	libusb reports "no handle" both for "unplugged" and for "not allowed to open",
+	which sends you looking at udev rules when the cable is simply out.
+	"""
+	for path in glob.glob("/sys/bus/usb/devices/*/idVendor"):
+		try:
+			with open(path) as f:
+				vendor = f.read().strip()
+			with open(path.replace("idVendor", "idProduct")) as f:
+				product = f.read().strip()
+		except OSError:
+			continue
+		if vendor == "%04x" % VID and product == "%04x" % PID:
+			return path.rsplit("/", 2)[-2]
+	return None
 
 
 class Usb:
@@ -73,7 +101,12 @@ class Usb:
 		self.lib.libusb_open_device_with_vid_pid.restype = ctypes.c_void_p
 		self.handle = self.lib.libusb_open_device_with_vid_pid(self.ctx, VID, PID)
 		if not self.handle:
-			raise SystemExit("cannot open %04x:%04x (permissions? usbfs needs root)" % (VID, PID))
+			where = device_present()
+			if where is None:
+				raise SystemExit("no %04x:%04x on the USB bus - is the US-600 plugged in?"
+				                 % (VID, PID))
+			raise SystemExit("cannot open %04x:%04x on %s (permissions? usbfs needs root)"
+			                 % (VID, PID, where))
 		self.lib.libusb_set_auto_detach_kernel_driver.argtypes = [ctypes.c_void_p, ctypes.c_int]
 		self.lib.libusb_set_auto_detach_kernel_driver(self.handle, 1)
 		for fn, args in (
@@ -178,24 +211,90 @@ def write_status(usb, value):
 	print("   'I' write 0x%02x: %s" % (value, name(rc)))
 
 
+def a_read(usb, value=0x0D00, length=5):
+	rc, data = usb.control(REQTYPE_IN, REQ_A, value, REQ_A_INDEX, length)
+	print("   'A' read 0x%04x/0x%04x: %s%s"
+	      % (value, REQ_A_INDEX, name(rc), (" = " + data.hex(" ")) if rc > 0 else ""))
+	return data if rc > 0 else None
+
+
+def a_write(usb, value):
+	rc, _ = usb.control(REQTYPE_OUT, REQ_A, value, REQ_A_INDEX)
+	print("   'A' write 0x%04x/0x%04x: %s" % (value, REQ_A_INDEX, name(rc)))
+	return rc
+
+
+def a_block(usb):
+	"""The 'A' register block the official Windows driver writes once per configuration.
+
+	Read 0x0d00 first (5 bytes, `04 92 00 02 00` on the bench), then 0x0d/0x0e/0x0f/0x10/0x11
+	in order. Nothing Ozzy does covers this; it is the only init request in the capture that
+	the driver has no equivalent for (USBPcap, 2026-11-10).
+	"""
+	a_read(usb, 0x0D00)
+	for value in (0x0D04, 0x0E00, 0x0F00, 0x1002, 0x110B):
+		a_write(usb, value)
+
+
+def windows_init(usb, with_a=True):
+	"""Replay the official 1.03rc1 init in the order the capture shows.
+
+	The reference is a configuration event on Windows 11 (USBPcap, 2026-11-10): 'I' read
+	(0x12), rate read back from endpoint 0 (44100), SET_CUR 48000 on 0x86 and 0x02, the 'A'
+	block, the rate re-sent (0x86 x3, 0x02 x2), SET_CUR read back from 0x86, and only then
+	the 'I' write of 0x32. SET_INTERFACE is not part of it (it travels inside the
+	configuration URB), so `drain_trial`'s `setup()` is already faithful.
+	"""
+	status = read_status(usb)
+	rc, data = usb.control(REQTYPE_CLASS_EP_IN, REQ_GET_CUR, 0x0100, 0, 3)
+	print("   GET_CUR ep0 rate: %s%s" % (name(rc), (" = " + data.hex(" ")) if rc == 3 else ""))
+	set_rate(usb, EP_PCM_IN)
+	set_rate(usb, EP_PCM_OUT)
+	if with_a:
+		a_block(usb)
+	for ep in (EP_PCM_IN, EP_PCM_OUT, EP_PCM_IN, EP_PCM_OUT, EP_PCM_IN):
+		set_rate(usb, ep)
+	rc, data = usb.control(REQTYPE_CLASS_EP_IN, REQ_GET_CUR, 0x0100, EP_PCM_IN, 3)
+	print("   GET_CUR 0x86 rate: %s%s" % (name(rc), (" = " + data.hex(" ")) if rc == 3 else ""))
+	if status is not None:
+		print("   " + status_line("'I' reads before the confirm:", read_status(usb)))
+	write_status(usb, 0x32)
+	if status is not None:
+		print("   " + status_line("'I' reads after the confirm:", read_status(usb)))
+
+
+def status_line(label, value):
+	"""'I' read result, or the fact that the device did not answer (unplugged, NO_DEVICE)."""
+	return "%s %s" % (label, ("0x%02x" % value) if value is not None else "unreadable")
+
+
 def stage(usb, label, sizes, notes, alt_iface1=True, clear_halt=False, handshake="none"):
 	print("\n== %s" % label)
 	setup(usb, alt_iface1)
 	status = read_status(usb)
-	print("   'I' reads 0x%02x" % status if status is not None else "   'I' unreadable")
+	print("   " + status_line("'I' reads", status))
+	if status is None:
+		print("   no answer from the device: wrong bus, or it went away (NO_DEVICE)")
+		release_all(usb)
+		return
 
 	if handshake == "ozzy":
 		set_rate(usb, EP_PCM_IN)
 		set_rate(usb, EP_PCM_OUT)
-		if status is not None:
-			write_status(usb, status | 0x20)
-			time.sleep(0.04)
-			print("   'I' reads 0x%02x after the confirm" % read_status(usb))
-	elif handshake == "mainline":
-		write_status(usb, 0x11)
-		write_status(usb, 0x10)
-		set_rate(usb, 0x81)
-		print("   'I' reads 0x%02x after the pulse" % read_status(usb))
+		write_status(usb, status | 0x20)
+		time.sleep(0.04)
+		print("   " + status_line("'I' reads after the confirm:", read_status(usb)))
+	elif handshake in ("mainline", "pulse", "rate81"):
+		# mainline's us122l, for the US-122L / US-144: 'I' 0x11 then 0x10, then the rate by
+		# SET_CUR on 0x81 (the feedback endpoint). Split into its two halves so the effect
+		# can be attributed: on 2026-11-10 this sequence is what took the US-600 from
+		# "every MIDI URB -EPROTO" back to "0 errors" (docs/us600-findings.md).
+		if handshake != "rate81":
+			write_status(usb, 0x11)
+			write_status(usb, 0x10)
+		if handshake != "pulse":
+			set_rate(usb, 0x81)
+		print("   " + status_line("'I' reads after the pulse:", read_status(usb)))
 	elif handshake != "none":
 		raise SystemExit("unknown handshake %r" % handshake)
 
@@ -316,6 +415,10 @@ def trial_main(usb):
 		print("   'T' 0/0: %s" % name(rc))
 
 	trial_main_list = [
+		("official Windows init, as captured", windows_init),
+		("official Windows init without the 'A' block",
+		 lambda usb: windows_init(usb, with_a=False)),
+		("'A' block alone (on the baseline init)", a_block),
 		("nothing (baseline)", None),
 		("'M' with 64 zero bytes", m_zeros),
 		("'I' idx1 read, then 'M' zeros, then idx1 bit 4 set/clear", i1_then_m),
@@ -333,6 +436,12 @@ def main():
 			help="only listen on 0x83 for SECS seconds (DIN IN, no loopback needed)")
 	ap.add_argument("-t", "--trials", action="store_true",
 			help="count how many 9-byte writes each candidate init lets through")
+	ap.add_argument("-R", "--recover", choices=("both", "pulse", "rate81"),
+			help="apply only the us122l handshake (both / the 'I' 0x11-0x10 pulse / SET_CUR "
+			     "on 0x81), then let the driver reload: the contract of a possible fix")
+	ap.add_argument("-N", "--no-reset", action="store_true",
+			help="do not reset the port first (the reset is the default; this is for "
+			     "separating the reset from the request that follows it)")
 	args = ap.parse_args()
 
 	if os.geteuid() != 0:
@@ -349,11 +458,17 @@ def main():
 		usb.open()
 		# A port reset first: the device wedges its IN pipes after a while (see the
 		# findings), and a SET_CONFIGURATION alone does not always clear that.
-		print("\n== resetting the port")
-		print("   libusb_reset_device: %s" % name(usb.reset()))
-		time.sleep(0.5)
+		if args.no_reset:
+			print("\n== not resetting the port (-N)")
+		else:
+			print("\n== resetting the port")
+			print("   libusb_reset_device: %s" % name(usb.reset()))
+			time.sleep(0.5)
 		if args.trials:
 			trial_main(usb)
+		elif args.recover:
+			handshake = {"both": "mainline", "pulse": "pulse", "rate81": "rate81"}[args.recover]
+			stage(usb, "recover: us122l %s only" % args.recover, (), 0, handshake=handshake)
 		elif args.listen:
 			listen(usb, args.listen)
 		else:
@@ -366,10 +481,11 @@ def main():
 			      handshake="mainline")
 	finally:
 		usb.close()
-
-	if loaded and not args.keep_unloaded:
-		print("\n== reloading snd_usb_ozzy")
-		subprocess.run(["modprobe", "snd-usb-ozzy"], check=False)
+		# Inside the finally: a failed open() must not leave the machine without its
+		# sound card, which is what happened the first time this ran unplugged.
+		if loaded and not args.keep_unloaded:
+			print("\n== reloading snd_usb_ozzy")
+			subprocess.run(["modprobe", "snd-usb-ozzy"], check=False)
 
 
 if __name__ == "__main__":
