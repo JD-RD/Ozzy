@@ -59,7 +59,7 @@ never had a real power cycle. Two things to remember:
 ## Next steps, in order
 
 1. **The one-hour soak (plan phase 4, item 5) — running since 2026-11-11 17:24**, on the real
-   chain (TR-8 pads 1-11 -> US-600 -> SP-404MK2 pads 1-11), with `~/soak.sh` sampling every
+   chain (TR-8 pads 1-11 -> US-600 -> SP-404MK2 pads 1-11), with `scripts/soak.sh` sampling every
    minute into `/home/pi/soak-<date>.log` — the only thing left of Phase 4. Chain plugged
    in (TR-8 into the US-600's MIDI in, SP-404MK2 out), `tr8-remap.service` already running from
    boot; play for an hour, then check `systemctl status tr8-remap`,
