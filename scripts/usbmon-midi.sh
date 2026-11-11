@@ -3,9 +3,14 @@
 # Needs root: re-runs itself with sudo. Saves the whole capture and prints the
 # lines of this device's endpoints other than 0.
 #
-# Usage: scripts/usbmon-midi.sh [-s seconds] [-b bus] [-o file] [-m]
+# Usage: scripts/usbmon-midi.sh [-s seconds] [-b bus] [-o file] [-m] [-p] [-c]
 #   -m  reload the module while capturing: shows the start sequence and whether
 #       the first MIDI URBs fail before or after the first PCM completions
+#   -p  hold playback open during the capture (speaker-test on the card)
+#   -c  hold 6-channel capture open during the capture (arecord)
+#       -p / -c exist because the official Windows driver always has the PCM
+#       engine streaming, and the MIDI pipes may need it; run the note with no
+#       stream, with -p, with -c, and with -p -c to find out which one it takes
 #
 # What to look for, after the note is sent:
 #   Bo  bulk OUT on EP 0x04, 9 bytes, payload 90 24 64 FD FD FD FD FD E0
@@ -14,6 +19,9 @@
 #   Bi  bulk IN on EP 0x83, 9 bytes
 #       -> a completion with 9 bytes means the DIN loopback came back; if the
 #       lines only show submissions and no completions, the device sends nothing
+#       (a running engine answers an empty read with 9 bytes of 0xFD ... 0x00
+#       instead of NAKing, which is how you tell "engine on, nothing to send"
+#       from "engine off")
 set -uo pipefail
 
 VID=${VID:-0644}
@@ -22,14 +30,18 @@ SECS=2
 BUS=""
 OUT=""
 RELOAD=0
+PLAY=0
+CAPTURE=0
 
-while getopts "s:b:o:mh" opt; do
+while getopts "s:b:o:mpch" opt; do
 	case $opt in
 	s) SECS=$OPTARG ;;
 	b) BUS=$OPTARG ;;
 	o) OUT=$OPTARG ;;
 	m) RELOAD=1 ;;
-	h) sed -n '2,18p' "$0"; exit 0 ;;
+	p) PLAY=1 ;;
+	c) CAPTURE=1 ;;
+	h) sed -n '2,24p' "$0"; exit 0 ;;
 	*) exit 2 ;;
 	esac
 done
@@ -66,18 +78,51 @@ fi
 OUT=${OUT:-/tmp/us600-usbmon-$BUS-$DEVNUM-$(date +%H%M%S).txt}
 
 CARD=""
+CARDIDX=""
 # The card (and udev's node) can lag behind the module by a moment, e.g. when the
 # capture is started right after a reload.
 for try in $(seq 1 30); do
 	for id in /proc/asound/card*/id; do
 		[ "$(cat "$id" 2>/dev/null)" = "US600" ] || continue
 		idx=${id#/proc/asound/card}
-		[ -e "/dev/snd/midiC${idx%%/*}D0" ] && CARD=/dev/snd/midiC${idx%%/*}D0
+		CARDIDX=${idx%%/*}
+		[ -e "/dev/snd/midiC${CARDIDX}D0" ] && CARD=/dev/snd/midiC${CARDIDX}D0
 	done
 	[ -n "$CARD" ] && break
 	sleep 0.1
 done
-[ -n "$CARD" ] && echo "== rawmidi: $CARD" || echo "== rawmidi: none yet, capturing without sending a note"
+[ -n "$CARD" ] && echo "== rawmidi: $CARD (card $CARDIDX)" || echo "== rawmidi: none yet, capturing without sending a note"
+
+STREAMS=""
+stop_streams() {
+	[ -n "$STREAMS" ] || return 0
+	# shellcheck disable=SC2086
+	kill $STREAMS 2>/dev/null
+	# shellcheck disable=SC2086
+	wait $STREAMS 2>/dev/null
+	STREAMS=""
+}
+trap stop_streams EXIT
+
+if [ "$PLAY" -eq 1 ] || [ "$CAPTURE" -eq 1 ]; then
+	if [ -z "$CARDIDX" ]; then
+		echo "== -p/-c need the ALSA card, none found" >&2
+	else
+		if [ "$PLAY" -eq 1 ]; then
+			speaker-test -D "plughw:$CARDIDX,0" -c 4 -r 48000 -t sine -l 0 >/dev/null 2>&1 &
+			STREAMS="$STREAMS $!"
+		fi
+		if [ "$CAPTURE" -eq 1 ]; then
+			arecord -D "plughw:$CARDIDX,0" -c 6 -r 48000 -f S16_LE /dev/null 2>/dev/null &
+			STREAMS="$STREAMS $!"
+		fi
+		sleep 0.7
+		for s in /proc/asound/card$CARDIDX/pcm*/sub0/status; do
+			[ -e "$s" ] || continue
+			echo "   ${s%/status}: $(tr '\n' ' ' < "$s")"
+		done
+	fi
+fi
 
 errors_before=$(dmesg | grep -c 'MIDI output error')
 
@@ -110,6 +155,7 @@ fi
 sleep "$SECS"
 kill "$CAP" 2>/dev/null
 wait "$CAP" 2>/dev/null
+stop_streams
 
 errors_after=$(dmesg | grep -c 'MIDI output error')
 echo "== MIDI output errors: $(( errors_after - errors_before )) since the start"
@@ -121,6 +167,7 @@ import sys
 
 path, bus, dev = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 lines, seen, first = [], {}, {}
+bad = {}   # completions with a non-zero status per endpoint: the discriminator
 
 for line in open(path, errors="replace"):
 	f = line.split()
@@ -149,6 +196,8 @@ for line in open(path, errors="replace"):
 	seen[key][0 if f[2] == "S" else 1] += 1
 	if f[2] == "C":
 		seen[key].append((status, length))
+	if f[2] == "C" and status != "0":
+		bad[key] = bad.get(key, 0) + 1
 	if f[2] == "C" and key not in first:
 		first[key] = (status, length, f[1])
 
@@ -166,10 +215,10 @@ for (kind, ep), v in sorted(seen.items(), key=lambda kv: (kv[0][1], kv[0][0])):
 	c = [x for x in v[2:] if x]
 	last = c[-1] if c else ("-", "-")
 	fst = first.get((kind, ep), ("none", "-", "-"))
-	print("  EP 0x%02x %-9s  submitted %d, completed %d, first status/length %s/%s, "
+	print("  EP 0x%02x %-9s  submitted %d, completed %d, errors %d, first status/length %s/%s, "
 	      "last %s/%s"
 	      % (ep | (0x80 if kind[1] == "i" else 0), names.get(kind, kind), v[0], v[1],
-		 fst[0], fst[1], last[0], last[1]))
+		 bad.get((kind, ep), 0), fst[0], fst[1], last[0], last[1]))
 EOF
 echo
 echo "full capture: $OUT"
