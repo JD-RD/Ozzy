@@ -7,7 +7,7 @@ longer matches reality — a stale handoff is worse than none.
 
 ## Where we are, in one paragraph
 
-**The bench is a Raspberry Pi 3B now, not the Mint box.** First boot observed, module built on
+**Phase 4 is closed: the bench is a Raspberry Pi 3B, and it runs the whole chain.** First boot observed, module built on
 the Pi (aarch64, kernel `6.18.50+rpt-rpi-v8`), US-600 on `card 0`, both MIDI directions healthy,
 and `tr8-remap.service` **active since boot** with the ALSA sequencer port subscribed. The
 transport matrix passes 14/14 twice in a row (`scripts/pi-bench.sh -c`): four rates of playback,
@@ -58,9 +58,9 @@ never had a real power cycle. Two things to remember:
 
 ## Next steps, in order
 
-1. **The one-hour soak (plan phase 4, item 5) — running since 2026-11-11 17:24**, on the real
-   chain (TR-8 pads 1-11 -> US-600 -> SP-404MK2 pads 1-11), with `scripts/soak.sh` sampling every
-   minute into `/home/pi/soak-<date>.log` — the only thing left of Phase 4. Chain plugged
+1. ~~The one-hour soak~~ **Passed 2026-11-11**: 59/59 samples growing, 0 `-EPROTO`, 0 engine
+   errors, and the chain still healthy at 2 h 30 (`/home/pi/soak-20261111-1724.log`). The wedge
+   did **not** come back, so "8 minutes of traffic" is not a rule; see the open question. — the only thing left of Phase 4. Chain plugged
    in (TR-8 into the US-600's MIDI in, SP-404MK2 out), `tr8-remap.service` already running from
    boot; play for an hour, then check `systemctl status tr8-remap`,
    `~/us600-linux/scripts/pi-bench.sh -c`, `/proc/asound/card*/pcm*/sub*/status` and
@@ -70,7 +70,7 @@ never had a real power cycle. Two things to remember:
    --base-note 44` (the TR-8 double-sends on channel 1, the MK2 listens on 10, its bank C
    starts at 44). Commits `e756a1b`, `d8ecabe`, `a5eb975` in `~/src/tr8-remap`. If the bank
    changes on the MK2, `--base-note` follows (36 A, 40 B, 44 C).
-3. **Upstream (plan phase 5)** — the US-600 row can arguably leave `EXPERIMENTAL`: the captures
+3. **Upstream (plan phase 5)** — the next thing, and the only one left — the US-600 row can arguably leave `EXPERIMENTAL`: the captures
    and the measurements say the device is not the problem. Report with the init table and the
    framing, say plainly that the `-EPROTO` state is a device state we could not reproduce, and
    keep the Pi's `dwc_otg` story out of it (host workaround, not a driver matter).

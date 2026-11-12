@@ -213,7 +213,7 @@ mapping, which belongs to `~/src/tr8-remap`.
 
 ## Phase 4 — Raspberry Pi 3B
 
-**Status 2026-11-11: the Pi 3B runs the bench.** First boot observed, module built and loaded
+**Status 2026-11-11: phase 4 closed — the 3B runs the bench, measured over 2 h 30.** First boot observed, module built and loaded
 on the Pi, audio transports measured, `tr8-remap.service` running from boot. One blocker found
 and fixed: `dwc_otg`'s FIQ FSM wedged the bulk pipes (`Timed out waiting for FSM NP transfer`),
 which looked like a rate-dependent `EIO`; `dwc_otg.fiq_fsm_enable=0` in `cmdline.txt` clears it
@@ -233,7 +233,9 @@ and `scripts/pi-bench.sh -c` now passes 14/14. Measurements: `docs/us600-finding
 5. Run the real chain and `tr8-remap.service` from boot; leave it an hour and check both
    `/proc/asound/card*/pcm*/sub*/status` and the counters. The service re-subscribes after a
    resume thanks to the `systemd-sleep` hook, and waits up to 30 s for its MIDI port at boot.
-   **In progress**: it is `active` since boot and the port is subscribed; the hour is next.
+   ~~Done~~: 59/59 one-minute samples with `rx`/`tx` growing, 0 `-EPROTO`, 0 FSM warnings, 0
+   engine errors, then 2 h 30 total (`docs/us600-findings.md`). The chain is TR pads 1-11 ->
+   SP pads 1-11 with no parasitic notes.
 6. If the 3B struggles (xruns, late completions), reduce what the host asks for: the capture
    transfer and queue are plain ALSA controls, e.g. `amixer -c 0 sset 'PCM Capture Transfer'
    '8 frames'` and `'PCM Capture Queue' '2 transfers'` (or `pi-bench.sh -t 8 -q 2`, which

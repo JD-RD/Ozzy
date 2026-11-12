@@ -724,3 +724,26 @@ What this says about the driver: PCM out/in, MIDI in *and* MIDI out, the handsha
 rate and the MIDI framing all work on the Pi; the US-600's DIN OUT carries host MIDI (the
 loopback test returns 24 notes byte for byte) and drives the MK2. The one thing left to
 measure is time: the `-EPROTO` wedge of the previous section.
+
+### 2026-11-11, 17:24-19:54 — the soak passes: 2 h 30 on the real chain, zero errors
+
+`scripts/soak.sh` sampled every minute for the first hour (59 samples, 17:24:37 -> 18:24:28), and
+the chain was left running afterwards; checked again at 19:54:
+
+| | |
+|---|---|
+| minutes where `rx`/`tx` stopped growing | **0 of 59** |
+| `-EPROTO` lines added | **0** (the count stayed at the stale 29 141 of the earlier storm) |
+| `dwc_otg` FSM warnings | 0 |
+| `Ozzy Stats` | out 3 424 130 transfers / **0 errors** / 42 short / 0 late / gap 5 248 µs; in 16 425 828 / **0** / 0 / 0 / gap 1 463 µs |
+| ALSA overruns | 0 |
+| rawmidi after 2 h 30 | `Rx` 809 794, `Tx` 639 044, still moving |
+
+So the driver, the Pi and the US-600 hold the bench chain (TR-8 -> US-600 -> SP-404MK2) for
+hours. **The `-EPROTO` wedge did not come back**, so "~8 minutes of traffic" is not a rule: it
+happened once, on a device that had already produced a 30 s storm earlier the same day, and the
+same board then ran 2 h 30 clean. It stays a state of the device we cannot provoke on demand —
+the difference from 2026-11-10 is that we now have one dated occurrence with `usbmon` evidence
+and a cured-then-clean comparison, which is what a phase 5 report can honestly say.
+
+Phase 4 is closed: item 5 was the last one.
