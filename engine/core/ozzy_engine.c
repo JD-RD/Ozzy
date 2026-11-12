@@ -30,6 +30,9 @@ struct ozzy_engine *ozzy_engine_init(void *mem, const struct ozzy_device *model)
 	if (!mem || !size)
 		return NULL;
 	memset(mem, 0, size);
+	/* The official driver's idle MIDI OUT transfers, which every isoc Ploytec device but the
+	 * US-600 needs (ozzy_engine_set_midi_idle_out) */
+	((struct ozzy_engine *)mem)->midi_idle_out = true;
 	switch (model->family) {
 	case OZZY_FAMILY_PLOYTEC_XONE:
 		ploytec_engine_init((struct ploytec_engine *)mem, model);

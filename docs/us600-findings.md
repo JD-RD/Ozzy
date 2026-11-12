@@ -747,3 +747,87 @@ the difference from 2026-11-10 is that we now have one dated occurrence with `us
 and a cured-then-clean comparison, which is what a phase 5 report can honestly say.
 
 Phase 4 is closed: item 5 was the last one.
+
+### 2026-11-12, 10:12-13:45 — the wedge four times, and why the 1 kHz padding has to stay
+
+A different use of the same bench: `tr8-transcribe play` sends notes (BD/SD/CH, channel 10) and
+24 ppqn clock **out** to a TR-8 on the US-600's DIN OUT. That traffic made the wedge look
+reproducible, four times in an hour:
+
+| time | device | what happened | `-EPROTO` |
+|---|---|---|---|
+| 10:12 | 005 | `midi-health.sh`, board up for an unknown time | 0, healthy |
+| 10:20 | 005 | 1 bar of MIDI played | 188, then 1993/2 s |
+| 10:23 | 006 | power cycle, then 4 + 4 + 16 bars | 0 (measured with the broken counter below) |
+| 10:46 | 006 | 8 bars, ~20 min after its power-up | 68, then wedged |
+| 10:57 | 007 | 10 bars, ~34 min after its power-up | 9, then wedged |
+| 11:01 | 008 | 60 single BD notes at 1 Hz, right after power-up | 0, and the TR-8 played |
+
+The 1 kHz padding was the obvious suspect, because `isoc_timer()`
+(`engine/devices/ploytec/ploytec_isoc_engine.c`) submits a MIDI OUT transfer every millisecond
+**even with nothing in the ring** — ~1000 URBs/s of `0xFD` frames from probe to disconnect, while
+`ploytec_us3xx` already submits only when it has bytes.
+
+**A measurement trap first, because it produced three false "0 errors" in this session.**
+`dmesg | grep -c 'MIDI output error'` is useless while errors are streaming: the ring buffer is
+full (~2 260 of these lines), so every new line evicts an old one and the count never moves —
+2 260 before a playback, 2 260 after, with 250 errors in between. `journalctl -k --since` keeps
+the history and is what every number below uses. `scripts/soak.sh` already counted through
+`journalctl` for this reason.
+
+**The patch** (`midi_idle_out`, engine field + `ozzy_engine_set_midi_idle_out()` + Linux module
+parameter, default `1` = the official driver's behaviour, plus `ozzy_midi_ring_empty()`): with
+`midi_idle_out=0`, `isoc_timer()` returns before submitting when the ring is empty.
+
+Measured on device 009, `midi_idle_out=0`, fresh power cycle:
+
+| test | `-EPROTO` | `Tx bytes` |
+|---|---|---|
+| 20 s idle | **0** | frozen (147 077) — not one transfer |
+| 20 s idle after a playback | **0** | frozen |
+| 1 bar played (clock on) | 134 | |
+| 2 bars played (clock on) | 256 | |
+| 4 bars played (clock on) | 500 | |
+| 2 bars played (`--no-clock`) | 67 | |
+| 4 bars played (`--no-clock`) | 123 | |
+
+The counts are proportional to what we send: ~125 errors per bar with the clock (~120 messages),
+~31 without (~24 messages). In other words, **every MIDI OUT transfer completes with `-EPROTO`
+once the stream is not continuous** — while the bytes still arrive. The patch does what it says
+and it makes the MIDI OUT worse.
+
+The A/B, device 010, fresh power cycle, **`midi_idle_out=1`** (the original behaviour):
+
+| test | `-EPROTO` | `Tx bytes` |
+|---|---|---|
+| 30 s idle | **0** | 23 295 -> 62 855 (+1 320 B/s of padding) |
+| 2 bars played | **0** | |
+| 20 s after | **0** | 144 106 |
+
+So the US-600 **needs the 1 ms cadence**: fed continuously it accepts every transfer, including
+the ones carrying notes; starved of it, it refuses all of them. The padding is not the bug. The
+parameter stays (default `1`) as the switch that showed this, and the comment in `isoc_timer()`
+now says why turning it off is wrong for this device rather than why it might help.
+
+That also reframes the wedge itself: "1000 errors/s" is exactly the signature of the
+`midi_idle_out=0` case — every transfer failing — at 1000 transfers/s. The wedge is therefore
+probably the state in which the device refuses transfers *even though* the cadence is right, not
+a traffic-shape problem.
+
+**And it did not come back.** Device 010, padding on, `padding-soak.sh` sampling every 5 minutes:
+
+| window after its power-up | errors in the window | `Tx bytes` |
+|---|---|---|
+| 12:55 -> 13:40 (24 -> 69 min) | **0 in all 9 samples** | grew 218 895 -> 6 408 800 (padding, ~2 570 B/s) |
+
+Then, 69 minutes after that power-up, with 45 minutes of padding behind it: 10 bars played
+(1 240 events, lateness 0.22 ms max) → **0 errors**, and 2 bars with the PCM keepalive of
+`session.sh` (`aplay /dev/zero` alongside the MIDI) → **0 errors** too. So neither the padding
+nor an open PCM stream is enough to wedge this board; the four occurrences of the morning all
+happened on boards (005/006/007) that had already been through a storm, and the run that finally
+looked reproducible was the one *without* the padding. What is left is a device state we can
+still neither provoke nor explain, and the traffic-shape hypothesis has to be dropped.
+
+Note on the bench, unrelated to the driver: the TR-8 does **not** need `SYNC = MIDI` to play host
+notes (that setting only picks the clock its own sequencer follows), and a `rmmod` + `insmod` is
+not enough to re-probe the card — `probe ... failed with error -71`, a power cycle is needed.

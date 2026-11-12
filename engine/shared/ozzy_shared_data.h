@@ -306,6 +306,12 @@ static inline uint32_t ozzy_midi_ring_pop(ozzy_midi_ring *ring, uint8_t *dst, ui
 	ozzy_store_release_u32(&ring->read_index, r);
 	return i;
 }
+
+/* True when @ring holds nothing: the engine has no MIDI to send */
+static inline bool ozzy_midi_ring_empty(const ozzy_midi_ring *ring)
+{
+	return ozzy_load_acquire_u32(&ring->read_index) == ozzy_load_acquire_u32(&ring->write_index);
+}
 #else
 typedef struct ozzy_midi_buffer ozzy_midi_ring;
 
@@ -335,6 +341,12 @@ static inline uint32_t ozzy_midi_ring_pop(ozzy_midi_ring *ring, uint8_t *dst, ui
 	}
 	ring->read_index.store(r, std::memory_order_release);
 	return i;
+}
+
+static inline bool ozzy_midi_ring_empty(const ozzy_midi_ring *ring)
+{
+	return ring->read_index.load(std::memory_order_acquire) ==
+	       ring->write_index.load(std::memory_order_acquire);
 }
 #endif
 

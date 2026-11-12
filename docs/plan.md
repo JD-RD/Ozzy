@@ -262,3 +262,37 @@ no unrelated reformatting.
   structs and enums over `#define`s.
 - Record what each experiment showed: findings go to `us600-findings.md`, protocol facts to
   `.claude/re/` (a `tascam_us600.md` once there is enough to be worth a file).
+
+## Phase 6 — the idle MIDI transfers (negative result, 2026-11-12)
+
+Opened by the wedge seen four times in an hour (last section of `us600-findings.md`), closed the
+same day by its own A/B: the 1 kHz padding of `isoc_timer()` is **required** by the US-600, not
+the cause.
+
+1. ~~Make the padding switchable and skip it when the ring is empty~~ Done: `midi_idle_out`
+   (engine field, `ozzy_engine_set_midi_idle_out()`, `module_param`, default `1`) plus
+   `ozzy_midi_ring_empty()`.
+2. ~~Does the padding wedge the board?~~ **No.** `midi_idle_out=0`, device 009: idle is silent
+   (`Tx bytes` frozen, 0 errors) but every transfer that carries bytes then completes with
+   `-EPROTO`, proportionally (134 errors for 1 bar of notes and clock, 500 for 4, 31 per bar
+   without the clock). `midi_idle_out=1`, device 010, fresh power cycle: 0 errors with the
+   padding running, 0 during a playback, 0 after. The device wants the continuous cadence; the
+   parameter keeps its default and stays as the switch that proved it.
+3. Reframed by 2: "1000 errors/s" is the signature of *every transfer failing* at 1000
+   transfers/s, so the wedge is probably the state where the device refuses transfers **even
+   with the cadence right** — not a traffic-shape problem. ~~`padding-soak.sh`: 45 min of pure
+   padding~~ Done, and nothing came back: 9 samples at 0 errors between 24 and 69 min after the
+   power-up, then 10 bars played (0 errors) and 2 bars with the PCM keepalive (0 errors). The
+   four occurrences of the morning were all on boards that had already stormed. **Open, with no
+   lead left**: keep the metric (`journalctl -k --since`) and the soak harness, and re-open the
+   question only on a fresh occurrence, with `usbmon` on `0x04` this time.
+4. Not to do: an `OZZY_QUIRK_NO_MIDI_IDLE_OUT`. There is nothing to hand upstream here beyond
+   the finding itself, which belongs in the Phase 5 report as a "do not do this" note.
+
+Measurement trap, worth keeping in `scripts/`: `dmesg | grep -c` cannot count these errors while
+they stream — the ring buffer is full of them, so the count is pinned (~2 260) and every new line
+evicts an old one. Three "0 errors" readings in this session came from that; `journalctl -k
+--since` is the metric, which `scripts/soak.sh` already used.
+
+Verified on: a real TR-8 on the DIN OUT, played by `tr8-transcribe play` (notes on channel 10,
+24 ppqn clock), Pi 3B, kernel 6.18.50+rpt-rpi-v8, 96 kHz.

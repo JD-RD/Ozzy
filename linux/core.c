@@ -28,6 +28,16 @@ MODULE_VERSION(OZZY_GIT_VERSION);
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;
 
+/*
+ * Send a MIDI OUT transfer every millisecond even with nothing in it (the official driver's
+ * idle transfers, the default). This is a diagnostic switch, not a fix: the US-600 needs the
+ * continuous cadence, and with midi_idle_out=0 every transfer that carries bytes completes with
+ * -EPROTO (measured 2026-11-12, docs/us600-findings.md). Read at probe.
+ */
+static bool midi_idle_out = true;
+module_param(midi_idle_out, bool, 0644);
+MODULE_PARM_DESC(midi_idle_out, "Send idle MIDI OUT transfers when nothing is queued (default 1)");
+
 static struct usb_driver ozzy_driver;
 
 /*
@@ -249,6 +259,7 @@ static int ozzy_chip_probe(struct usb_interface *intf, const struct usb_device_i
 	ozzy_engine_attach(chip->engine, &chip->bus.bus, chip->shm);
 	ozzy_engine_set_usb_speed(chip->engine, ozzy_usb_speed(chip->dev->speed));
 	ozzy_engine_set_driver_version(chip->engine, OZZY_GIT_VERSION);
+	ozzy_engine_set_midi_idle_out(chip->engine, midi_idle_out);
 	/* No clock anchors: ALSA reads the position each transfer moves (ozzy_pcm_progress) */
 	if (!ozzy_engine_alloc_memory(chip->engine, &ozzy_kmalloc)) {
 		ret = -ENOMEM;

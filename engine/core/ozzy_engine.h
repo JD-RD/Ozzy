@@ -233,6 +233,8 @@ struct ozzy_engine_report {
  * @usb_speed:    enum ozzy_usb_speed, as the platform found it (ozzy_engine_set_usb_speed)
  * @driver_version: the platform's build (OZZY_GIT_VERSION), NULL if it didn't say
  * @anchors:      the platform reads the clock anchors (ozzy_engine_set_anchors)
+ * @midi_idle_out: send MIDI OUT transfers with nothing in them every millisecond, as the
+ *                official driver does (ozzy_engine_set_midi_idle_out; the isoc family only)
  * @starts:       starts that succeeded since ozzy_engine_attach
  * @stats_last/@stats_late: per PCM direction, the bus time of the last completion (0: none
  *                since the start) and the gap past which a completion is late (the queued
@@ -258,6 +260,7 @@ struct ozzy_engine {
 	uint8_t usb_speed;
 	const char *driver_version;
 	bool anchors;
+	bool midi_idle_out;
 	uint32_t starts;
 	uint64_t stats_last[OZZY_PCM_DIRS];
 	uint64_t stats_late[OZZY_PCM_DIRS];
@@ -352,6 +355,17 @@ static inline void ozzy_engine_set_usb_speed(struct ozzy_engine *e, enum ozzy_us
 static inline void ozzy_engine_set_anchors(struct ozzy_engine *e, bool anchors)
 {
 	e->anchors = anchors;
+}
+
+/*
+ * Whether to send MIDI OUT transfers with nothing in them every millisecond (the official
+ * driver's idle transfers, the default). The US-600 needs them: with them off, every transfer
+ * carrying bytes completes with -EPROTO (docs/us600-findings.md, 2026-11-12). Off is the switch
+ * that shaped that experiment and stays available for the next one. Before starting.
+ */
+static inline void ozzy_engine_set_midi_idle_out(struct ozzy_engine *e, bool idle)
+{
+	e->midi_idle_out = idle;
 }
 
 /* The driver's build (OZZY_GIT_VERSION, which only the platform's own files get): a string

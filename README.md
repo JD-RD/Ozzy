@@ -211,6 +211,12 @@ The settings window, **ozzy**, works on Linux too (needs GTK 3 as well: `libgtk-
 
 **Leaving devices out:** `make OZZY_DISABLE="NumarkNS7 ReloopIQ2MIDI"` builds without those devices (names are the keys in [`common/ozzy_devices.def`](common/ozzy_devices.def)). By default the Linux build leaves out the Tascam US-144 and US-144MKII, which the kernel's own drivers handle; `make OZZY_DISABLE=` builds them in.
 
+**Module parameters:**
+
+| parameter | default | meaning |
+|---|---|---|
+| `midi_idle_out` | `1` | Send a MIDI OUT transfer every millisecond even with nothing queued, as the official driver does. Diagnostic switch: the US-600 **needs** that cadence, and with `0` every transfer carrying bytes completes with `-EPROTO` (measured 2026-11-12, see [`docs/us600-findings.md`](docs/us600-findings.md)). Read at probe. |
+
 ### 🪟 Windows
 
 1. Turn **Secure Boot off** in the PC's firmware settings (UEFI). Ozzy is test-signed, not signed by Microsoft (that needs a paid EV certificate), and Windows only loads test-signed drivers with Secure Boot off.

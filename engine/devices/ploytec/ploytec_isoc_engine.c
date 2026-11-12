@@ -249,7 +249,11 @@ static void isoc_complete(struct ozzy_engine *e, uint8_t pipe, void *xfer, int s
 
 /*
  * isoc_timer - Every millisecond (bus timer): the next MIDI OUT transfer if the previous one
- * is done. Like the official driver it also sends idle transfers. Same pacing as Linux
+ * is done. Like the official driver it also sends idle transfers (e->midi_idle_out). The
+ * US-600 needs that continuous cadence: with the idle transfers off, every transfer that does
+ * carry bytes completes with -EPROTO (measured 2026-11-12, ~125 errors per bar of notes and
+ * clock, while the bytes still arrive), and with them on, a fresh board takes everything for
+ * at least half an hour without one error (docs/us600-findings.md). Same pacing as Linux
  * (ozzy_midi_out_tick).
  */
 static void isoc_timer(struct ozzy_engine *e)
@@ -263,6 +267,11 @@ static void isoc_timer(struct ozzy_engine *e)
 		return;
 	if (ozzy_xchg_acquire_bool(&pe->midi_out_busy, true))
 		return;
+
+	if (!e->midi_idle_out && ozzy_midi_ring_empty(&shm->midi_out)) {
+		ozzy_store_release_bool(&pe->midi_out_busy, false);
+		return;
+	}
 
 	buf = e->mem.midi_out;
 	n = ploytec_midi_xfer_begin(&pe->midi, buf);
